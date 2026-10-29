@@ -1,0 +1,159 @@
+name: tests
+
+# Every push and every pull request runs the full suite through run_tests.py.
+# That runner is the contract: it exits nonzero if ANY suite fails, so a red
+# build here means a failing check, never a lint opinion.
+#
+# The suites themselves are offline -- in-memory EVMs, compiled mock contracts,
+# fake JSON-RPC and fake block-explorer providers -- so nothing in this job
+# talks to a real chain and no secrets are needed. The only network access is
+# installing dependencies and the solc binary.
+#
+# Installs are pinned by constraints.txt (see that file): the requirements files
+# pin ranges, the constraints file pins the resolved closure, and every job also
+# verifies that what it installed is exactly what was pinned.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: suites (py ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The dependency set pins ranges, not exact versions, so the interpreter is
+    # part of what can drift. 3.11 is the oldest version every requirement
+    # allows; 3.13 is the newest. fail-fast is off so one bad interpreter still
+    # leaves the other two results visible.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          # The pins decide what gets installed, so a change to them must
+          # invalidate the cache too -- otherwise a stale wheel is reused.
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            constraints.txt
+            constraints-py*.txt
+
+      # A per-interpreter override (constraints-py3.11.txt) wins if it exists;
+      # otherwise the shared pin set governs this leg.
+      - name: Install pinned dependencies
+        env:
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          key="$(echo "$PYVER" | cut -d. -f1-2)"
+          if [ -f "constraints-py${key}.txt" ]; then pins="constraints-py${key}.txt"; else pins="constraints.txt"; fi
+          echo "governing pins: $pins"
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt -c "$pins"
+
+      # test_seed_pool.py compiles a mock QuickSwap router; a fresh runner has
+      # no solc, so fetch it here where a download failure is obvious rather
+      # than in the middle of a suite.
+      - name: Fetch solc for the mock-router fixture
+        run: python -c "import solcx; solcx.install_solc('0.8.24')"
+
+      - name: Run every suite
+        run: python run_tests.py
+
+      # Runs after the suite on purpose: if the pins are wrong, the suite result
+      # is worth having as well, and the job still goes red below. Every
+      # INSTALLED package must equal its pin. Pins for packages that do not
+      # exist on this platform (pywin32 on Linux) are allowed and reported.
+      - name: Capture resolved pins and check them against the constraints
+        env:
+          PYVER: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          key="$(echo "$PYVER" | cut -d. -f1-2)"
+          if [ -f "constraints-py${key}.txt" ]; then pins="constraints-py${key}.txt"; else pins="constraints.txt"; fi
+          out="resolved-py${key}.txt"
+          python -m pip freeze --exclude-editable | sort -f > "$out"
+          echo "captured $(wc -l < "$out") pins in $out"
+          python - "$pins" "$out" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          pins_path, freeze_path = sys.argv[1], sys.argv[2]
+
+
+          def norm(name):
+              return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+          def parse(path):
+              seen = {}
+              for raw in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  name, sep, version = line.partition("==")
+                  if not sep or not version.strip() or " " in version.strip():
+                      print(f"::error file={path}::{line!r} is not an exact ==pin, so it cannot pin anything")
+                      sys.exit(1)
+                  seen[norm(name)] = version.strip()
+              return seen
+
+
+          pins = parse(pins_path)
+          got = parse(freeze_path)
+
+          drift = []
+          for name in sorted(got):
+              if name not in pins:
+                  drift.append(f"UNPINNED  {name}=={got[name]}  ({pins_path} has no pin for it)")
+              elif pins[name] != got[name]:
+                  drift.append(f"DRIFT     {name}=={got[name]}  (pinned {pins[name]})")
+
+          print(f"{len(got)} package(s) installed, {len(pins)} pin(s) in {pins_path}")
+          absent = sorted(name for name in pins if name not in got)
+          if absent:
+              print("pinned but not installed here, so inert on this platform: " + ", ".join(absent))
+
+          if not drift:
+              print("every installed package matches its pin")
+              sys.exit(0)
+
+          for line in drift:
+              print(f"::error::{line}")
+          print("")
+          print(f"{len(drift)} package(s) do not match {pins_path}.")
+          print(f"The artifact resolved-py contains the full list that was actually installed;")
+          print(f"take the versions from there and update {pins_path} so the matrix stays reproducible.")
+          sys.exit(1)
+          PY
+
+      # The capture itself: the exact closure for this interpreter, whether or
+      # not it matched, so a drift failure can be fixed from the diff.
+      - name: Upload resolved pins
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-py${{ matrix.python-version }}
+          path: resolved-py*.txt
+          if-no-files-found: ignore
+          retention-days: 14

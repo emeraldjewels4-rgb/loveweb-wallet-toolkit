@@ -1,0 +1,7 @@
+# Test-only. Install:  pip install -r requirements.txt -r requirements-dev.txt
+#
+# test_distribute.py runs real signed transactions against an in-memory EVM, so
+# it needs a full local chain implementation. These are beta releases upstream.
+
+eth-tester>=0.14.0b1      # EthereumTesterProvider backend
+py-evm>=0.12.1b1          # the EVM that eth-tester drives

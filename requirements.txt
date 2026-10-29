@@ -1,0 +1,18 @@
+# Wallet generation + JSON export.
+# Install:  pip install -r requirements.txt
+
+eth-account>=0.13,<0.15   # EVM keys, BIP39/BIP44 derivation, MetaMask paths
+                          # verified on 0.13.7 and 0.14.0
+mnemonic>=0.20,<0.22      # BIP39 English wordlist + checksum validation
+bip-utils>=2.9,<3         # Bitcoin BIP84 (native segwit) derivation -- only needed for --chains btc
+cryptography>=42          # only needed for --encrypt
+
+# ETH distribution (distribute_eth.py)
+web3>=8,<9                # JSON-RPC client, transaction construction and signing
+
+# ERC-20 token pipeline (build_token.py, deploy_token.py, verify_token.py).
+# There is no Node.js, Hardhat or Foundry here on purpose: py-solc-x drives the
+# official solc binary, which it downloads and caches on first use.
+py-solc-x>=2.0,<3         # compiler front end; installs solc into ~/.solcx
+requests>=2.31            # Polygonscan verification API (also comes with web3),
+                          # and downloading the pinned OpenZeppelin sources
