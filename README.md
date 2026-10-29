@@ -1,5 +1,8 @@
 # gen_wallets
 
+[![tests](https://github.com/emeraldjewels4-rgb/loveweb-wallet-toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/emeraldjewels4-rgb/loveweb-wallet-toolkit/actions/workflows/tests.yml)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-3776ab)
+
 Generates **new** EVM (MetaMask-compatible) and Bitcoin wallets and exports them as JSON.
 
 It creates fresh keypairs. It does **not** read, extract or "download" keys from
@@ -901,6 +904,31 @@ Each `check()` now refuses the two shapes a swap produces — a string condition
 and a non-string label — so the mistake crashes loudly instead of passing. The
 convention of each file is stated in a comment at its own definition, since the
 cheap fix would have been to rewrite 140 call sites.
+
+## Contributing
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+python build_token.py      # once per checkout: four suites read build/ProjectToken.json
+python run_tests.py        # every suite + the audit, one exit code
+```
+
+`run_tests.py` is the contract, and the CI badge above means one thing: that
+command exited 0 on **3.11, 3.12 and 3.13** with the same pinned dependencies.
+A red leg is a portability finding, not noise — do not widen a version range to
+make it go away. If a single pin genuinely cannot work on one interpreter, add
+`constraints-py<minor>.txt` with the pins that differ; CI prefers it for that
+leg alone.
+
+- **A new tool needs a suite.** Name it `test_<tool>.py`, add it to the suite
+  list in [run_tests.py](run_tests.py), and keep the file's `check()` argument
+  order — `audit_test_checks.py` refuses a swapped call, because a string in the
+  condition slot is always truthy and that check can never fail.
+- **Never commit a wallet export, key file, deployment record or address map.**
+  [.gitignore](.gitignore) lists them; if a suite needs one, provision it with
+  [wallet_fixtures.py](wallet_fixtures.py) instead of adding a file.
+- **Suites stay offline.** In-memory EVMs, mock contracts, fake RPC and explorer
+  providers. A test that needs a real chain or an API key will not run in CI.
 
 ## Status
 
