@@ -955,6 +955,36 @@ git push --dry-run        # asks the hook without sending anything
 git push --no-verify      # explicitly accept an unverified main
 ```
 
+### The flow: branch, pull request, three greens, merge
+
+Because a fresh commit has no run yet, **nothing** goes to `main` by direct push.
+Branches are not gated (the hook only inspects `main`), so the work goes there:
+
+```bash
+git switch -c fix/whatever
+git add -A && git commit -m "what changed and why"
+git push -u origin fix/whatever        # branches are ungated; main is watched
+```
+
+Open the pull request with the link git prints, or the *Compare & pull request*
+button on the repository page -- `gh` is not required and is not installed here.
+
+The pull request head gets its own run. **Merge only when all three jobs are
+green**; the checks are listed under the PR and the badge on this page reports
+the same workflow. Then bring `main` down to the machine:
+
+```bash
+git switch main
+git pull --ff-only                     # no hook runs on a pull, only on push
+git branch -d fix/whatever
+```
+
+A merge made in the web UI is a single commit on `main` that no runner has seen,
+which is fine: the work under it was verified on the PR head, and the new merge
+commit gets its own run. The unavoidable case is an emergency -- `git push
+--no-verify` lands it, the hook is skipped, and CI still runs afterwards; if it
+comes back red, `main` is red and the fix is another branch.
+
 ## Status
 
 Tested on Python 3.12.10 against published test vectors:
