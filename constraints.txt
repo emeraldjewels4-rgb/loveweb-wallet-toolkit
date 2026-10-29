@@ -15,6 +15,13 @@
 # Verified by running the full suite against these exact pins in that
 # environment: 725 checks, exit 0.
 #
+# CONFIRMED IN CI (run 40830944160, ubuntu-latest): all three legs resolved the
+# identical 64-package set -- no version differed on 3.11 or 3.13, and the only
+# difference from this Windows capture is pywin32, which web3 requires on win32
+# and which therefore is not installed on Linux. Every suite passed on each
+# interpreter (726 checks per leg: the 0600 permission check only runs off
+# Windows). That is the reproducibility this file exists to provide.
+#
 # Install reproducibly:
 #     pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 #     python run_tests.py

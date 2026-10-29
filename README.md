@@ -772,6 +772,11 @@ longer describes the closure. Pins for packages that do not exist on the
 runner's platform are allowed and listed as inert (`pywin32` is the one case:
 `web3` pulls it in on Windows only). The freeze is uploaded as the
 `resolved-py<minor>` artifact, so drift arrives as a diff instead of a mystery.
+
+That check has run: all three legs resolved the **identical 64-package set**, no
+version differing on 3.11 or 3.13, and each leg passed every suite. A Linux leg
+reports **726** checks rather than 725 because one assertion (POSIX permissions
+end up `0600`) can only run off Windows.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
 
