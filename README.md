@@ -747,10 +747,12 @@ naively inflated every total by exactly one, because five of the suites end
 with the line `ALL CHECKS PASSED` -- which is a summary, not a check.
 
 **CI runs exactly that command.** [.github/workflows/tests.yml](.github/workflows/tests.yml)
-runs `python run_tests.py` on every push and pull request across **Python 3.11,
-3.12 and 3.13** (a matrix with `fail-fast: false`, so one bad interpreter still
-reports the other two), and each job fails if any suite exits nonzero -- so a
-red build always means a failing check. 3.11 is the oldest version every
+runs `python run_tests.py` on every push to `main` and on every pull request
+across **Python 3.11, 3.12 and 3.13** (a matrix with `fail-fast: false`, so one
+bad interpreter still reports the other two), and each job fails if any suite
+exits nonzero -- so a red build always means a failing check. Branch pushes are
+not a trigger: a bare `push:` also fires for feature branches, which ran the
+whole matrix twice per PR commit, six identical jobs instead of three. 3.11 is the oldest version every
 requirement allows and 3.13 the newest; the pins are ranges, not exact versions,
 so the interpreter is part of what can drift. The suites are offline (in-memory EVMs, mock contracts, fake
 providers), so no chain access and no secrets are involved; the only network
