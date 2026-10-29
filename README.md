@@ -930,6 +930,31 @@ leg alone.
 - **Suites stay offline.** In-memory EVMs, mock contracts, fake RPC and explorer
   providers. A test that needs a real chain or an API key will not run in CI.
 
+### `main` only takes commits CI has passed
+
+GitHub's own answer for that -- required status checks on `main` -- is not
+available here. The repository is private on the Free plan, and both APIs refuse
+with the same 403: *"Upgrade to GitHub Pro or make this repository public to
+enable this feature."* So the rule is a pre-push hook instead:
+
+```bash
+git config core.hooksPath .githooks     # once per clone
+```
+
+It reads the check runs of the commit being pushed and refuses `main` unless
+**all three** suites succeeded on it. A commit that was never pushed at all is
+refused too -- open a pull request, let CI run, then merge; a direct push to a
+commit no runner has seen can never satisfy the rule by construction.
+
+Be clear about what this is: a guard on **this clone**. `git push --no-verify`,
+the GitHub web UI, and any other machine all bypass it. Making the repository
+public, or upgrading to Pro, is what moves the rule to the server.
+
+```bash
+git push --dry-run        # asks the hook without sending anything
+git push --no-verify      # explicitly accept an unverified main
+```
+
 ## Status
 
 Tested on Python 3.12.10 against published test vectors:

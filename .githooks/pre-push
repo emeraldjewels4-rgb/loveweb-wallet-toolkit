@@ -1,0 +1,20 @@
+#!/bin/sh
+# Git runs this on push; the rule itself lives in require_matrix.py.
+#
+# This wrapper exists because a Python shebang is not reliable here: on Windows,
+# `python3` can be the Microsoft Store stub, which prints nothing and exits 0 --
+# a hook that silently approves every push. So each candidate is probed with a
+# real `-c pass` before it is trusted, and finding no interpreter refuses the
+# push rather than allowing it.
+set -eu
+here=$(dirname "$0")
+
+for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "pass" >/dev/null 2>&1; then
+        exec "$candidate" "$here/require_matrix.py" "$@"
+    fi
+done
+
+echo "pre-push: no working Python interpreter found, so the matrix cannot be checked." >&2
+echo "pre-push: install Python, or push with --no-verify to accept an unverified main." >&2
+exit 1
