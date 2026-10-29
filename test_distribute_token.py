@@ -18,6 +18,7 @@ from pathlib import Path
 
 import distribute_token as d
 import gen_wallets as g
+import wallet_fixtures
 from eth_abi import encode
 from eth_account import Account
 from web3 import EthereumTesterProvider, Web3
@@ -96,6 +97,10 @@ def make_wallets(path: Path, n: int) -> list[str]:
 
 
 def main() -> int:
+    # Section 10 reads the real 500-wallet export; it is gitignored (private
+    # keys), so a fresh clone gets a throwaway one of the same shape instead.
+    wallet_fixtures.ensure(["wallets-500.json"])
+
     tmp = Path(tempfile.mkdtemp(prefix="dist_token_"))
     results = tmp / "distribution.json"
     wallets_20 = tmp / "wallets-20.json"
@@ -475,27 +480,26 @@ def main() -> int:
 
     section("10. The real 500-wallet file, read but not funded")
     real = Path("wallets-500.json")
-    if real.is_file():
-        loaded = d.load_recipients(real)
-        cleaned, dups, selfs = d.clean_recipients(loaded, SOURCE, str(real))
-        check(len(loaded) == 500, "500 addresses load from the file", str(len(loaded)))
-        check(len(cleaned) == 500 and not dups and not selfs,
-              "all 500 are unique and none is the sender")
-        # A fresh token shaped like the live one: the shared `token` has been
-        # spent down by the sections above, so sending 1,000,000,000 from it is
-        # correctly refused and would prove nothing about the 500-wallet file.
-        real_token = deploy(w3, SOURCE, name="mindglitchofdecimal.loveweb",
-                            symbol="LOVEWEB", initial=1_000_000_000, cap=1_000_000_000)
-        rc, err, out = run_cli(["--token", real_token, "--key-file", str(key_file), "--tester",
-                                "--wallets", str(real), "--total", "1000000000",
-                                "--results", str(tmp / "real.json")])
-        check(rc == 0, "a dry run over all 500 exits 0", err or out[-300:])
-        check("recipients      : 500" in out, "the plan covers all 500")
-        check("2,000,000 LOVEWEB" in out or "2,000,000" in out,
-              "splitting 1,000,000,000 across 500 is 2,000,000 each", out[-700:])
-        check(not (tmp / "real.json").exists(), "and nothing was written")
-    else:
-        check(False, "wallets-500.json is missing")
+    if not real.is_file():
+        raise SystemExit(f"fixture missing: {real} was not provisioned")
+    loaded = d.load_recipients(real)
+    cleaned, dups, selfs = d.clean_recipients(loaded, SOURCE, str(real))
+    check(len(loaded) == 500, "500 addresses load from the file", str(len(loaded)))
+    check(len(cleaned) == 500 and not dups and not selfs,
+          "all 500 are unique and none is the sender")
+    # A fresh token shaped like the live one: the shared `token` has been spent
+    # down by the sections above, so sending 1,000,000,000 from it is correctly
+    # refused and would prove nothing about the 500-wallet file.
+    real_token = deploy(w3, SOURCE, name="mindglitchofdecimal.loveweb",
+                        symbol="LOVEWEB", initial=1_000_000_000, cap=1_000_000_000)
+    rc, err, out = run_cli(["--token", real_token, "--key-file", str(key_file), "--tester",
+                            "--wallets", str(real), "--total", "1000000000",
+                            "--results", str(tmp / "real.json")])
+    check(rc == 0, "a dry run over all 500 exits 0", err or out[-300:])
+    check("recipients      : 500" in out, "the plan covers all 500")
+    check("2,000,000 LOVEWEB" in out or "2,000,000" in out,
+          "splitting 1,000,000,000 across 500 is 2,000,000 each", out[-700:])
+    check(not (tmp / "real.json").exists(), "and nothing was written")
 
     print("\n" + "=" * 60)
     if FAILED:

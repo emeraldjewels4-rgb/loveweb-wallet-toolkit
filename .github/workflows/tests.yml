@@ -76,6 +76,14 @@ jobs:
       - name: Fetch solc for the mock-router fixture
         run: python -c "import solcx; solcx.install_solc('0.8.24')"
 
+      # build/ is gitignored (compiled artifact + vendored OpenZeppelin), and
+      # test_token, test_mint, test_distribute_token and test_seed_pool all read
+      # build/ProjectToken.json. Without this step a fresh checkout fails four
+      # suites with FileNotFoundError, which is exactly what the first CI run
+      # did. This is the documented first step in the README.
+      - name: Build the contract artifact the token suites read
+        run: python build_token.py
+
       - name: Run every suite
         run: python run_tests.py
 

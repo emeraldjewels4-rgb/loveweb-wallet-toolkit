@@ -17,6 +17,7 @@ from pathlib import Path
 
 import gen_wallets as g
 import payment_request as pr
+import wallet_fixtures
 
 FAILED: list[str] = []
 
@@ -375,6 +376,11 @@ def test_cli_conflicts() -> None:
 
 
 def main() -> int:
+    # The 4,000-address set is a gitignored wallet export (private keys), so a
+    # fresh clone gets four throwaway files of the same shape -- still exactly
+    # 4,000 unique mainnet addresses, which is what these checks assert.
+    wallet_fixtures.ensure(REAL)
+
     print("=" * 68)
     print("PAYMENT REQUEST TESTS   (pure local computation; no network, no funds)")
     print("=" * 68)

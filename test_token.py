@@ -24,6 +24,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import wallet_fixtures
+
 ARTIFACT = Path("build/ProjectToken.json")
 
 CHECKS: list[tuple[str, bool, str]] = []
@@ -875,6 +877,11 @@ def test_key_loading() -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Test the Polygon token pipeline.")
     parser.parse_args(argv)
+
+    # The CLI tests deploy with a real key file, and the key-loading tests need a
+    # Bitcoin-only export to reject. Both are gitignored (they hold private
+    # keys), so provision throwaway ones on a machine that has none.
+    wallet_fixtures.ensure(["wallets-operator.json", "wallets-btc-900.json"])
 
     print("=" * 68)
     print("TOKEN PIPELINE TESTS   (in-memory EVM; nothing is broadcast)")

@@ -701,7 +701,10 @@ If a contract was deployed elsewhere (Remix, another machine), verify it with
 
 ### Test it
 
+Four suites read the compiled contract, so on a fresh checkout build it first:
+
 ```bash
+python build_token.py          # once; four suites read build/ProjectToken.json
 python run_tests.py            # everything below + the audit: 725 checks, 68s
 
 python test_token.py           # 162 checks, in-memory EVM, nothing broadcast
@@ -715,6 +718,14 @@ python test_check_funding.py   # 46 checks, both providers faked, no network
 python test_watch_only.py      # 41 checks, zpub vs seed derivation, BIP84 vectors
 python test_gen_wallets.py     # 65 checks, BIP39/BIP44/BIP84 vectors, encryption
 ```
+
+The wallet exports those suites read (`wallets-operator.json`, `wallets-500.json`,
+`wallets-btc-900.json`, the 4,000-address set) hold private keys and are
+gitignored, so [wallet_fixtures.py](wallet_fixtures.py) provisions throwaway
+files of the same shape from the BIP39 test vector when they are absent — one
+distinct passphrase per file, so the address sets never overlap. An existing
+file is never touched, so on a machine that has the real exports the real
+exports are what get tested.
 
 **One command, one exit code.** [run_tests.py](run_tests.py) runs the ten
 suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
