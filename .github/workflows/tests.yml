@@ -13,8 +13,13 @@ name: tests
 # pin ranges, the constraints file pins the resolved closure, and every job also
 # verifies that what it installed is exactly what was pinned.
 
+# Push on main only, plus every pull request. A bare `push:` also fires for
+# feature branches, and every branch that has a PR then runs the whole matrix
+# twice on the same commit -- six jobs for three suites, for identical results.
+# The pull request event is what gives a branch its run, so nothing is lost.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
