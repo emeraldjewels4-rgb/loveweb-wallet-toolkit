@@ -1038,6 +1038,22 @@ git pull --ff-only                     # no hook runs on a pull, only on push
 git branch -d fix/whatever
 ```
 
+Then confirm the merge landed as **one** commit, which is what every entry in
+this history looks like:
+
+```bash
+python check_merge_shape.py --ref origin/main
+```
+
+[check_merge_shape.py](check_merge_shape.py) exits nonzero when the landed
+commit has more than one parent. It exists because that has already happened:
+PR #5 was merged with `merge_method: "squash"` and GitHub produced a two-parent
+merge commit anyway, with its message showing every supplied field had been
+ignored. CI is green either way and `git log --oneline` reads normally, so
+nothing else would have caught it. Such commits are recorded in
+`KNOWN_MERGE_COMMITS` with the reason they cannot be undone, and only those: a
+new one is a failure to fix, not a line to add.
+
 A merge made in the web UI is a single commit on `main` that no runner has seen,
 which is fine: the work under it was verified on the PR head, and the new merge
 commit gets its own run. The unavoidable case is an emergency -- `git push
