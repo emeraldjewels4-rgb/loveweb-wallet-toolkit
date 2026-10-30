@@ -53,6 +53,21 @@ def make_recipients(path: Path, n: int = 100) -> list[str]:
     return [w["evm"]["address"] for w in doc["wallets"]]
 
 
+def deploy_runtime(w3, runtime: bytes, funder: str) -> str:
+    """Deploy raw `runtime` bytecode and return the resulting contract address."""
+    if len(runtime) > 0xFF:
+        raise SystemExit("runtime too long for this helper's single-byte init code")
+    # PUSH1 len, PUSH1 12 (where the runtime starts), PUSH1 0, CODECOPY; then
+    # PUSH1 len, PUSH1 0, RETURN.
+    init = bytes([0x60, len(runtime), 0x60, 0x0C, 0x60, 0x00, 0x39,
+                  0x60, len(runtime), 0x60, 0x00, 0xF3])
+    tx_hash = w3.eth.send_transaction(
+        {"from": funder, "data": (init + runtime).hex(), "gas": 300_000}
+    )
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    return receipt["contractAddress"]
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="dist_test_"))
     wallets = tmp / "wallets.json"
@@ -166,6 +181,66 @@ def main() -> int:
     late_recs = json.loads(late_results.read_text())["transfers"]
     check(all(r["status"] == "success" for r in late_recs),
           "retry reconciled the lost receipts instead of re-sending")
+
+    print("\n=== 10. gas is measured per recipient, not assumed 21,000 ===")
+    # An address with code executes that code on a plain value transfer. This is
+    # the stand-in for the EIP-7702 delegated account that cost real POL: it
+    # needs more than 21,000, so a hardcoded 21,000 runs out and reverts.
+    funder = w3.eth.accounts[0]
+    costly = deploy_runtime(w3, bytes.fromhex("34600055" "34600155" "34600255" "00"), funder)
+    costly_file = tmp / "costly.json"
+    costly_file.write_text(json.dumps([costly]), encoding="utf-8")
+    costly_results = tmp / "costly-results.json"
+    rc = d.main(["--wallets", str(costly_file), "--amount", "0.001", "--results",
+                 str(costly_results), "--tester", "--execute", "--yes"])
+    costly_rec = json.loads(costly_results.read_text())["transfers"][0]
+    check(rc == 0, "a recipient whose code costs gas is paid successfully")
+    check(costly_rec["gas_limit"] > d.DEFAULT_GAS_LIMIT,
+          f"gas limit {costly_rec['gas_limit']} is above the 21,000 floor")
+    check(costly_rec["status"] == "success", "no out-of-gas revert for the code recipient")
+    check(w3.eth.get_balance(costly) == Web3.to_wei("0.001", "ether"),
+          "the code recipient actually received the value")
+    check(all(t["gas_limit"] == 21000 for t in transfers),
+          "plain wallets still get exactly 21,000, not a padded estimate")
+
+    print("\n=== 11. an un-estimable recipient is reported, never sent blind ===")
+    # A contract that rejects value: there is no honest gas limit to sign with.
+    # Guessing 21,000 here would burn the fee and deliver nothing.
+    rejects = deploy_runtime(w3, bytes.fromhex("60006000fd"), funder)
+    rej_file = tmp / "reject.json"
+    rej_file.write_text(json.dumps([rejects]), encoding="utf-8")
+    rej_results = tmp / "reject-results.json"
+
+    blocks_before = w3.eth.block_number
+    rc = d.main(["--wallets", str(rej_file), "--amount", "0.001",
+                 "--results", str(rej_results), "--tester"])
+    check(rc == 1, "a dry run reports an unpriceable recipient in its exit status")
+    check(w3.eth.block_number == blocks_before, "that dry run still mined nothing")
+
+    rc = d.main(["--wallets", str(rej_file), "--amount", "0.001",
+                 "--results", str(rej_results), "--tester", "--execute", "--yes"])
+    check(rc == 1, "a run where nothing can be priced exits 1")
+    check(w3.eth.get_balance(rejects) == 0, "nothing was sent to the rejecting address")
+    check(not rej_results.exists(), "no results file claiming work was done")
+
+    # Mixed: the priceable recipient is still paid, the other is recorded as an
+    # error, and the exit status says something went wrong.
+    mix_file = tmp / "mix.json"
+    mix_file.write_text(json.dumps([recipients[3], rejects]), encoding="utf-8")
+    mix_results = tmp / "mix-results.json"
+    before = w3.eth.get_balance(recipients[3])
+    rc = d.main(["--wallets", str(mix_file), "--amount", "0.001", "--results",
+                 str(mix_results), "--tester", "--execute", "--yes"])
+    mix = {t["address"].lower(): t
+           for t in json.loads(mix_results.read_text())["transfers"]}
+    check(rc == 2, "a partially priceable run exits 2")
+    check(mix[recipients[3].lower()]["status"] == "success", "the priceable recipient was paid")
+    check(w3.eth.get_balance(recipients[3]) == before + Web3.to_wei("0.001", "ether"),
+          "and received exactly one more transfer")
+    check(mix[rejects.lower()]["status"] == "estimate_failed",
+          "the unpriceable recipient is recorded as estimate_failed, not as sent")
+    check("gas estimate failed" in mix[rejects.lower()].get("error", ""),
+          "the reason is kept in the results file")
 
     print("\n" + "=" * 60)
     if FAILED:

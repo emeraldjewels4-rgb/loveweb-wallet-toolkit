@@ -23,13 +23,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# A value transfer to an address with no code costs exactly this. It is a FLOOR,
+# not the plan: an address that has code runs that code on the way in, so 21,000
+# runs out of gas and the transfer REVERTS -- the value never arrives and the fee
+# is charged anyway. A real 0.004 POL send did exactly that: reverted at 21,000,
+# needed 21,200, and paid 0.0058 POL for nothing.
 DEFAULT_GAS_LIMIT = 21_000
+# Headroom added on top of an estimate that exceeds the floor. The estimate is
+# taken against one block and the transaction lands in a later one, so a state
+# change in between must not turn into an out-of-gas revert.
+GAS_BUFFER_PCT = 0.10
+GAS_BUFFER_MIN = 2_000
 ENV_KEY_NAME = "SOURCE_PRIVATE_KEY"
 
 
@@ -126,6 +137,38 @@ def describe_fees(fees: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Gas
+# --------------------------------------------------------------------------- #
+class GasEstimateError(Exception):
+    """Gas for one recipient could not be established."""
+
+
+def estimate_gas_limit(w3, source: str, destination: str, amount_wei: int) -> int:
+    """Gas limit needed to deliver `amount_wei` to `destination`.
+
+    A plain wallet with no code needs exactly 21,000 gas. An address that has
+    code -- a contract, or an EIP-7702 delegated EOA whose code is 0xef0100
+    followed by an address -- executes that code for a plain value transfer, so
+    a hardcoded 21,000 runs out and the transaction reverts. The revert costs
+    real gas and delivers nothing, which is worse than not sending at all.
+
+    Raises GasEstimateError rather than guessing: a recipient whose cost cannot
+    be established must be reported, not signed blind.
+    """
+    try:
+        estimate = w3.eth.estimate_gas(
+            {"from": source, "to": destination, "value": amount_wei}
+        )
+    except Exception as exc:
+        raise GasEstimateError(f"{type(exc).__name__}: {exc}") from exc
+
+    if estimate <= DEFAULT_GAS_LIMIT:
+        return DEFAULT_GAS_LIMIT
+    margin = max(GAS_BUFFER_MIN, math.ceil(estimate * GAS_BUFFER_PCT))
+    return estimate + margin
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
@@ -136,7 +179,10 @@ def main(argv=None) -> int:
     parser.add_argument("--wallets", required=True, help="recipients: gen_wallets.json / JSON array / list")
     parser.add_argument("--rpc", help="EVM JSON-RPC URL")
     parser.add_argument("--amount", required=True, help="ETH to send to each wallet, e.g. 0.002")
-    parser.add_argument("--gas-limit", type=int, default=DEFAULT_GAS_LIMIT)
+    parser.add_argument("--gas-limit", type=int, default=None,
+                        help="fixed gas limit for every transfer; default: estimate per "
+                             "recipient (addresses with code, e.g. EIP-7702 delegated "
+                             "accounts, need more than 21,000)")
     parser.add_argument("--private-key-file", help=f"file holding the source key (or set {ENV_KEY_NAME})")
     parser.add_argument("--source-address", help="expected source address; checked against the key")
     parser.add_argument("--results", default="distribution.json", help="audit trail of every tx")
@@ -185,12 +231,16 @@ def main(argv=None) -> int:
     if not recipients:
         raise SystemExit("Error: no valid recipients after removing duplicates and the source.")
 
+    if args.gas_limit is not None and args.gas_limit < DEFAULT_GAS_LIMIT:
+        raise SystemExit(
+            f"Error: --gas-limit {args.gas_limit} is below the {DEFAULT_GAS_LIMIT} gas "
+            "every value transfer costs. It would fail out of gas."
+        )
+
     w3 = build_web3(args.rpc, args.tester)
     chain_id = w3.eth.chain_id
     fees = fee_params(w3)
-    per_tx_fee = args.gas_limit * (fees.get("maxFeePerGas") or fees.get("gasPrice"))
-    total_value = amount_wei * len(recipients)
-    total_needed = total_value + per_tx_fee * len(recipients)
+    price = fees.get("maxFeePerGas") or fees.get("gasPrice")
     balance = w3.eth.get_balance(source)
     nonce_start = w3.eth.get_transaction_count(source, block_identifier="pending")
 
@@ -208,6 +258,52 @@ def main(argv=None) -> int:
     pending = [a for a in recipients if a.lower() not in done]
     skipped = len(recipients) - len(pending)
 
+    # Affordability at the 21,000 floor, checked BEFORE estimating. Estimation
+    # itself fails on a source that cannot cover the value, and "gas could not be
+    # estimated" is the wrong diagnosis when the real problem is a thin source.
+    floor_fee = DEFAULT_GAS_LIMIT * len(pending) * price
+    if pending and balance < amount_wei * len(pending) + floor_fee:
+        print(f"INSUFFICIENT BALANCE: need at least "
+              f"{Web3.from_wei(amount_wei * len(pending) + floor_fee, 'ether')} ETH "
+              f"({Web3.from_wei(amount_wei * len(pending), 'ether')} to send + "
+              f"{Web3.from_wei(floor_fee, 'ether')} minimum fees), "
+              f"have {Web3.from_wei(balance, 'ether')} ETH.")
+        print("Reduce --amount or top up the source wallet. Nothing was signed.")
+        return 1
+
+    # ---- gas: measured per recipient, never assumed -------------------------
+    gas_limits: dict[str, int] = {}
+    estimate_failed: list[tuple[str, str]] = []
+    if args.gas_limit is not None:
+        gas_limits = {addr: args.gas_limit for addr in pending}
+    else:
+        for addr in pending:
+            try:
+                gas_limits[addr] = estimate_gas_limit(w3, source, addr, amount_wei)
+            except GasEstimateError as exc:
+                estimate_failed.append((addr, str(exc)))
+        pending = [addr for addr in pending if addr in gas_limits]
+
+    # An un-estimable recipient is recorded, so the results file is honest about
+    # it and the next run retries it -- nothing was signed, so nothing was paid.
+    #
+    # The status is its own value on purpose: the retry loop below only re-sends
+    # records that are error/reverted/pending, and re-sending one of these would
+    # sign it at the assumed 21,000 that cannot work -- a revert that costs gas.
+    estimate_records = [
+        {
+            "address": addr,
+            "amount_eth": str(Web3.from_wei(amount_wei, "ether")),
+            "amount_wei": amount_wei,
+            "status": "estimate_failed",
+            "error": f"gas estimate failed: {reason}",
+        }
+        for addr, reason in estimate_failed
+    ]
+
+    total_fee = sum(gas_limits.values()) * price
+    send_value = amount_wei * len(pending)
+
     # ---- plan ----------------------------------------------------------------
     print("=" * 68)
     print("PLAN" + ("" if args.execute else "   (DRY RUN - nothing will be sent)"))
@@ -219,24 +315,40 @@ def main(argv=None) -> int:
           f"{f'  (+{self_count} source, skipped)' if self_count else ''}")
     if skipped:
         print(f"already funded  : {skipped} (from {results_path}) -> {len(pending)} left")
+    if args.gas_limit is not None:
+        print(f"gas per tx      : {args.gas_limit:,} (fixed by --gas-limit)")
+    elif gas_limits:
+        print(f"gas per tx      : estimated  {min(gas_limits.values()):,} min / "
+              f"{max(gas_limits.values()):,} max")
     print(f"amount each     : {Web3.from_wei(amount_wei, 'ether')} ETH")
-    print(f"total to send   : {Web3.from_wei(total_value, 'ether')} ETH")
-    print(f"network fees    : {Web3.from_wei(per_tx_fee * len(pending), 'ether')} ETH "
-          f"({per_tx_fee * len(pending) / 1e18:.8f})")
-    print(f"TOTAL REQUIRED  : {Web3.from_wei(total_value + per_tx_fee * len(pending), 'ether')} ETH")
+    print(f"total to send   : {Web3.from_wei(send_value, 'ether')} ETH")
+    print(f"network fees    : {Web3.from_wei(total_fee, 'ether')} ETH "
+          f"({total_fee / 1e18:.8f})")
+    print(f"TOTAL REQUIRED  : {Web3.from_wei(send_value + total_fee, 'ether')} ETH")
     print(f"source balance  : {Web3.from_wei(balance, 'ether')} ETH")
     print(f"start nonce     : {nonce_start}")
 
+    if estimate_failed:
+        print(f"\nWARNING: gas could not be estimated for {len(estimate_failed)} "
+              "recipient(s). They are excluded rather than signed with an assumed "
+              f"{DEFAULT_GAS_LIMIT:,} gas limit, which would revert and still cost the fee:")
+        for addr, reason in estimate_failed[:10]:
+            print(f"  {addr}  {reason[:110]}")
+        if len(estimate_failed) > 10:
+            print(f"  ... and {len(estimate_failed) - 10} more")
+
     if not pending:
+        if estimate_failed:
+            print("\nNothing to send: gas could not be estimated for any recipient.")
+            return 1
         print("\nNothing to do: every recipient is already funded per the results file.")
         return 0
 
-    per_tx_fee_pending = per_tx_fee * len(pending)
-    needed = amount_wei * len(pending) + per_tx_fee_pending
+    needed = send_value + total_fee
     if balance < needed:
         print(f"\nINSUFFICIENT BALANCE: need {Web3.from_wei(needed, 'ether')} ETH, "
               f"have {Web3.from_wei(balance, 'ether')} ETH.")
-        print(f"Reduce --amount (current plan sends {Web3.from_wei(total_value, 'ether')} ETH)"
+        print(f"Reduce --amount (current plan sends {Web3.from_wei(send_value, 'ether')} ETH)"
               f" or top up the source wallet.")
         return 1
 
@@ -254,7 +366,7 @@ def main(argv=None) -> int:
         tx = {
             "to": dest,
             "value": amount_wei,
-            "gas": args.gas_limit,
+            "gas": gas_limits[dest],
             "nonce": nonce_start + i,
             "chainId": chain_id,
             "from": source,
@@ -267,7 +379,9 @@ def main(argv=None) -> int:
     if not args.execute:
         print("\nDRY RUN COMPLETE. Nothing was broadcast.")
         print("Re-run with --execute to send.")
-        return 0
+        # A recipient the run could not price is a real problem to fix, not a
+        # detail: report it in the exit status rather than only in the log.
+        return 1 if estimate_failed else 0
 
     # ---- confirm -------------------------------------------------------------
     if not args.yes:
@@ -279,13 +393,14 @@ def main(argv=None) -> int:
 
     # ---- broadcast -----------------------------------------------------------
     print("\nBroadcasting...")
-    records = list(done.values())
+    records = list(done.values()) + estimate_records
     sent: list[tuple[dict, object]] = []
     for i, (dest, stx) in enumerate(zip(pending, signed)):
         rec = {
             "address": dest,
             "amount_eth": str(Web3.from_wei(amount_wei, "ether")),
             "amount_wei": amount_wei,
+            "gas_limit": gas_limits[dest],
             "nonce": nonce_start + i,
             "tx_hash": Web3.to_hex(stx.hash),
             "status": "pending",
@@ -354,7 +469,8 @@ def main(argv=None) -> int:
             nonce = rec.get("nonce")
             if nonce is None:  # never signed, so any free nonce is correct
                 nonce = w3.eth.get_transaction_count(source, block_identifier="pending")
-            tx = {"to": rec["address"], "value": amount_wei, "gas": args.gas_limit,
+            tx = {"to": rec["address"], "value": amount_wei,
+                  "gas": rec.get("gas_limit", DEFAULT_GAS_LIMIT),
                   "nonce": nonce, "chainId": chain_id, "from": source, **fees}
             try:
                 stx = account.sign_transaction(tx)
