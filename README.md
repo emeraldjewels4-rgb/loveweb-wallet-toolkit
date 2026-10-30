@@ -390,6 +390,7 @@ Guardrails, all exercised by the test suite:
 | Dry run by default | Without `--execute` it signs everything and broadcasts nothing |
 | Typed confirmation | You must type `SEND`, unless you pass `--yes` |
 | Balance pre-check | Aborts before sending if the source cannot cover value plus fees |
+| Gas estimate | Each recipient's gas is measured; a recipient that cannot be priced is reported, never sent |
 | `--max-total` | Hard cap on the total ETH sent |
 | Resume | With a `--results` file, already-funded wallets are skipped |
 | Audit trail | Every tx hash, nonce, block and gas figure is written to JSON |
@@ -398,6 +399,49 @@ Guardrails, all exercised by the test suite:
 The source address is skipped if it appears among the recipients, and duplicates
 are collapsed. Fees use EIP-1559 where the chain supports it (`2x base + tip`)
 and fall back to legacy `gasPrice` otherwise.
+
+### Gas is measured per recipient, not assumed
+
+A value transfer to a plain wallet costs exactly 21,000 gas, which is why a
+transfer script is tempting to write with that number hardcoded. It is wrong as
+soon as the recipient has code: a contract — or an **EIP-7702 delegated EOA**,
+whose code is `0xef0100` followed by an address — executes that code on the way
+in, so 21,000 runs out and the transaction **reverts while still charging the
+fee**. A real 0.004 POL send did exactly that: it needed 21,220 gas, reverted at
+21,000, and burned 0.0058 POL for nothing.
+
+So each recipient's cost is asked of the chain with `eth_estimateGas`:
+
+- **21,000 stays the floor.** A plain wallet still gets exactly 21,000, so an
+  ordinary distribution costs what it did before — the estimate never pads the
+  common case.
+- **Above the floor, headroom is added** (10%, minimum 2,000 gas), because the
+  estimate is taken in one block and the transaction lands in another.
+- **A recipient that cannot be priced is not signed at all.** Estimation fails
+  when the transfer would revert, and there is no honest limit to sign with —
+  guessing is precisely what burns fees. That address is printed with the RPC's
+  reason, recorded in the results file as `estimate_failed`, and left alone. The
+  run exits `1` if nothing could be priced, `2` if only some failed. It is not
+  retried either, since a retry would re-send it at the limit that cannot work.
+
+The plan shows what it found, and the balance arithmetic uses those real limits:
+
+```text
+gas per tx      : estimated  21,000 min / 23,342 max
+```
+
+`--gas-limit` overrides the whole thing and applies one fixed limit to every
+recipient, for when you know something the estimate does not:
+
+```bash
+# a recipient that gains code between blocks: give it room explicitly
+python distribute_eth.py --wallets wallets.json --rpc <YOUR_RPC_URL> \
+    --amount 0.002 --gas-limit 40000 --execute
+```
+
+A value below 21,000 is refused before anything is signed, because it cannot
+succeed. Leave the flag off and the per-recipient estimate is used, which is
+almost always what you want.
 
 **A receipt that fails is not proof the transfer failed.** A rate-limited
 endpoint answering HTTP 403 after the transaction was mined is the common case.
@@ -1032,6 +1076,11 @@ an in-memory chain and checks the resulting balances, distinct nonces, receipts
 and recorded tx hashes. It also covers the dry run sending nothing, the resume
 path not double-paying, insufficient balance and `--max-total` both aborting,
 and invalid addresses / source mismatch / duplicate and self-send filtering.
+For gas, it deploys two contracts: one that costs ~94,190 gas and must still be
+paid (its limit comes back above 21,000 and the value arrives instead of
+reverting), and one that rejects value, which must be reported as
+`estimate_failed` rather than sent — with the mixed case paying the good wallet
+exactly once and exiting `2`.
 Reads were confirmed against a live mainnet RPC (`chain_id=1`, real fees and
 balances); **nothing was ever broadcast to a real network**.
 
