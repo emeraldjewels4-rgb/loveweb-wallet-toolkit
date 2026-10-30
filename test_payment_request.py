@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import sys as _probe_sys
+_probe_sys.exit('protection probe: deliberate red leg')
+
 import contextlib
 import csv
 import io
