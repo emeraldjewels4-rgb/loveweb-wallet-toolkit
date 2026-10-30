@@ -3,9 +3,10 @@
 
 Used by build_token.py, deploy_token.py, verify_token.py and test_token.py.
 
-distribute_eth.py predates this module and keeps its own copy of the key-loading
-and fee logic; it is deliberately left alone rather than refactored under a
-passing test suite.
+distribute_eth.py predates this module and keeps its own key lookup and fee
+logic; it delegates gen_wallets.py export parsing to private_key_from_export()
+so it accepts the same files -- and reports the same --key-index and
+--password-file errors -- as the token tools.
 
 Nothing here prints a private key, and nothing here takes one from argv: argv is
 stored in shell history and is visible to every process on the machine.
@@ -91,12 +92,17 @@ def private_key_from_export(path: Path, index: int = 0, password: str | None = N
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Error: {path} is not valid JSON ({exc}).")
 
-    if not isinstance(doc, dict) or "wallets" not in doc:
+    if not isinstance(doc, dict):
         raise SystemExit(
             f"Error: {path} is not a key file and not a gen_wallets.py export "
-            "(no 'wallets' array)."
+            "(a JSON object was expected)."
         )
 
+    # An encrypted export has no top-level "wallets": the whole document is one
+    # Fernet payload, so it is only a "wallets" file again after decrypting. The
+    # encrypted check therefore has to come first -- otherwise a password-
+    # protected export is rejected as "not an export" and the user is sent
+    # looking for a problem that does not exist.
     if doc.get("encrypted"):
         if password is None:
             raise SystemExit(
@@ -105,6 +111,12 @@ def private_key_from_export(path: Path, index: int = 0, password: str | None = N
                 "wallets in plaintext."
             )
         doc = decrypt_doc(doc, password)
+
+    if "wallets" not in doc:
+        raise SystemExit(
+            f"Error: {path} is not a key file and not a gen_wallets.py export "
+            "(no 'wallets' array)."
+        )
 
     entries = doc.get("wallets", [])
     if not entries:

@@ -378,6 +378,19 @@ any provider works, none is bundled). The source private key comes from the
 prompt. It is deliberately **not** a command-line flag: argv shows up in process
 lists and gets saved to shell history.
 
+`--private-key-file` takes either a bare key file or a `gen_wallets.py` export,
+in which case `--key-index` picks the wallet and `--password-file` supplies the
+password for an encrypted export — the same flags the token tools use:
+
+```bash
+python distribute_eth.py --wallets wallets.json --rpc <YOUR_RPC_URL> \
+    --amount 0.002 --private-key-file wallets-500.json --key-index 1 \
+    --source-address 0x2767…a9BD
+```
+
+Pair it with `--source-address` and you get a guarantee that the key you picked
+really is the wallet you meant, instead of funding from a stranger's address.
+
 Note this only moves native ETH that the source key already holds. Native ETH
 has no approval mechanism, so no spender or operator can move it — which is why
 "fill these wallets from a spender" only ever meant an ERC-20 approval, and is
