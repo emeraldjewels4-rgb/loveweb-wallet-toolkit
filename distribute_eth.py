@@ -15,8 +15,9 @@ Typical use:
     python distribute_eth.py --wallets wallets.json --rpc <URL> --amount 0.002 --execute
 
 The source private key is never taken from the command line (argv is visible in
-process lists and shell history). Use the SOURCE_PRIVATE_KEY env var, a file, or
-the interactive prompt.
+process lists and shell history). Use the SOURCE_PRIVATE_KEY env var, a file --
+a bare key or a gen_wallets.py export, in which case --key-index picks the wallet
+-- or the interactive prompt.
 """
 
 from __future__ import annotations
@@ -72,7 +73,25 @@ def load_recipients(path: Path) -> list[str]:
 
 def load_private_key(args) -> str:
     if args.private_key_file:
-        key = Path(args.private_key_file).read_text(encoding="utf-8").strip()
+        path = Path(args.private_key_file)
+        if not path.is_file():
+            raise SystemExit(f"Error: no such key file: {path}")
+        text = path.read_text(encoding="utf-8").strip()
+        if text.startswith("{"):
+            # A gen_wallets.py export, not a bare key: pick one wallet out of it.
+            # The parsing (and the decrypt) lives in eth_common so this accepts
+            # exactly the same files, and reports the same errors, as the token
+            # tools -- including "--password-file" for an encrypted export.
+            import eth_common
+
+            password = None
+            if getattr(args, "password_file", None):
+                password = Path(args.password_file).read_text(encoding="utf-8").rstrip("\n")
+                if not password:
+                    raise SystemExit("Error: the password file is empty.")
+            key = eth_common.private_key_from_export(path, args.key_index, password)
+        else:
+            key = text
     elif os.environ.get(ENV_KEY_NAME):
         key = os.environ[ENV_KEY_NAME].strip()
     else:
@@ -183,7 +202,13 @@ def main(argv=None) -> int:
                         help="fixed gas limit for every transfer; default: estimate per "
                              "recipient (addresses with code, e.g. EIP-7702 delegated "
                              "accounts, need more than 21,000)")
-    parser.add_argument("--private-key-file", help=f"file holding the source key (or set {ENV_KEY_NAME})")
+    parser.add_argument("--private-key-file",
+                        help="bare key file, or a gen_wallets.py JSON export "
+                             f"(or set {ENV_KEY_NAME})")
+    parser.add_argument("--key-index", type=int, default=0,
+                        help="which wallet to use when --private-key-file is an export "
+                             "(default 0)")
+    parser.add_argument("--password-file", help="password for an encrypted key export")
     parser.add_argument("--source-address", help="expected source address; checked against the key")
     parser.add_argument("--results", default="distribution.json", help="audit trail of every tx")
     parser.add_argument("--max-total", help="hard cap on total ETH sent, e.g. 0.5")

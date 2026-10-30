@@ -242,6 +242,81 @@ def main() -> int:
     check("gas estimate failed" in mix[rejects.lower()].get("error", ""),
           "the reason is kept in the results file")
 
+    print("\n=== 12. a gen_wallets.py export can be used with --key-index ===")
+    # Every other tool takes an export plus --key-index; before this, the only
+    # way to spend from one of the 500 generated wallets was to copy its key out
+    # by hand. The export below puts an unrelated key first, so index 1 is the
+    # only choice that can possibly match SOURCE.
+    decoy = Account.create()
+    export = tmp / "export.json"
+    export.write_text(json.dumps({"version": 1, "wallets": [
+        {"evm": {"address": decoy.address, "private_key": decoy.key.hex()}},
+        {"evm": {"address": SOURCE, "private_key": SOURCE_KEY[2:]}},
+    ]}), encoding="utf-8")
+    one = tmp / "one.json"
+    one.write_text(json.dumps([recipients[5]]), encoding="utf-8")
+    export_args = ["--wallets", str(one), "--amount", "0.001", "--tester",
+                   "--results", str(tmp / "export-results.json"),
+                   "--private-key-file", str(export), "--source-address", SOURCE]
+
+    env_backup = os.environ.pop(d.ENV_KEY_NAME, None)
+    try:
+        rc = d.main(export_args + ["--key-index", "1"])
+        check(rc == 0, "--key-index 1 picks the funded wallet out of the export")
+
+        try:
+            d.main(export_args + ["--key-index", "0"])
+            check(False, "the wrong index is caught by --source-address")
+        except SystemExit as e:
+            check("does not match" in str(e), "--key-index 0 selects the decoy and is refused")
+
+        try:
+            d.main(export_args + ["--key-index", "9"])
+            check(False, "an out-of-range index is refused")
+        except SystemExit as e:
+            check("out of range" in str(e), "an out-of-range --key-index is refused")
+
+        # A bare key file must keep working: the export branch keys off the JSON.
+        bare = tmp / "bare.key"
+        bare.write_text(SOURCE_KEY + "\n", encoding="utf-8")
+        rc = d.main(["--wallets", str(one), "--amount", "0.001", "--tester",
+                     "--results", str(tmp / "bare-results.json"),
+                     "--private-key-file", str(bare), "--source-address", SOURCE])
+        check(rc == 0, "a bare key file still works")
+
+        try:
+            d.main(["--wallets", str(one), "--amount", "0.001", "--tester",
+                    "--private-key-file", str(tmp / "absent.key")])
+            check(False, "a missing key file is refused")
+        except SystemExit as e:
+            check("no such key file" in str(e), "a missing key file is refused by name")
+
+        # An encrypted export must name the flag that fixes it, not traceback.
+        import gen_wallets as g
+        pw = "dist-pass"
+        enc = tmp / "enc.json"
+        enc.write_text(json.dumps(g.encrypt_doc({"version": 1, "wallets": [
+            {"evm": {"address": SOURCE, "private_key": SOURCE_KEY[2:]}}]}, pw)),
+            encoding="utf-8")
+        try:
+            d.main(["--wallets", str(one), "--amount", "0.001", "--tester",
+                    "--private-key-file", str(enc)])
+            check(False, "an encrypted export without a password is refused")
+        except SystemExit as e:
+            check("--password-file" in str(e),
+                  "and the error names --password-file")
+
+        pw_file = tmp / "pw.txt"
+        pw_file.write_text(pw + "\n", encoding="utf-8")
+        rc = d.main(["--wallets", str(one), "--amount", "0.001", "--tester",
+                     "--results", str(tmp / "enc-results.json"),
+                     "--private-key-file", str(enc), "--password-file", str(pw_file),
+                     "--source-address", SOURCE])
+        check(rc == 0, "and --password-file decrypts it")
+    finally:
+        if env_backup is not None:
+            os.environ[d.ENV_KEY_NAME] = env_backup
+
     print("\n" + "=" * 60)
     if FAILED:
         print(f"{len(FAILED)} CHECK(S) FAILED:")
