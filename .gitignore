@@ -77,3 +77,8 @@ fund-targets*.txt
 holders-*.csv
 seed-transfer.json
 seed-signer.txt
+
+# Scratch work: agent probes, downloaded logs and one-off scripts. None of it is
+# part of the toolkit, and the transaction records collected there put addresses
+# and amounts side by side, which is the same reason the maps above stay local.
+.sandbox/
