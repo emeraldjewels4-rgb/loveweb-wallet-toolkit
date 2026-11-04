@@ -210,6 +210,9 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - A column named `on` is a reserved word in MariaDB, so the first version's `CREATE TABLE` was rejected while the caught exception served defaults and reported `on = 00`; quoting it fixed the seed, and a failed storage read now says `chain table not ready` in `storage.error` instead of passing for "switched off".
 - The sync ran again after the upgrade and picked up the new table: 3 merged row(s), digest `abdea4c48ad3daec...`, verified end to end.
 
+- Five `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: the account reports 2051 bindings with `all_on = 01`, and the `web9999` gateway 33 hosts, every one on.
+- A binding is not DNS: only `web9999.metakakoon.x12.mx` resolves (191.223.34.55, answering `404` at `/` and at `/toolkit/chain.php`), and the other four have no record at all. The five are connected in the matrix; serving the interface at those names still needs them provisioned in cPanel with DNS pointed here.
+
 ## Deployed
 
 Live on x10hosting's Infinity plan (server `s22.infinitysrv.com`), account `fiatgodx`, home `/home/fiatgodx`:
