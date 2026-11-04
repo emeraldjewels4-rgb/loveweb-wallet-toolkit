@@ -991,33 +991,56 @@ leg alone.
 
 ### `main` only takes commits CI has passed
 
-GitHub's own answer for that -- required status checks on `main` -- is not
-available here. The repository is private on the Free plan, and both APIs refuse
-with the same 403: *"Upgrade to GitHub Pro or make this repository public to
-enable this feature."* So the rule is a pre-push hook instead:
+This is enforced by GitHub, on the server, against every machine. `main` is
+protected with the three matrix jobs as required status checks:
+
+| setting | value |
+|---|---|
+| required checks | `suites (py 3.11)`, `suites (py 3.12)`, `suites (py 3.13)` |
+| branches must be up to date | on |
+| applies to administrators | on |
+| required approvals | 0 |
+| force pushes / branch deletion | blocked |
+
+The rule is available here because the repository is **public**: protected
+branches and rulesets come with GitHub Free for public repositories, and both
+APIs answer `403 Upgrade to GitHub Pro ...` on a private one. Required approvals
+is deliberately 0 -- a solo committer cannot approve their own pull request, so
+requiring one would lock the only person who can merge out of the repository.
+
+So a direct push to `main` cannot succeed, and the refusal comes before any
+check runs, worded like this:
+
+```
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - 3 of 3 required status checks are expected.
+```
+
+`--no-verify` does not change that, because the push is refused by GitHub, not
+by anything on the machine. A red pull request is blocked the same way: the
+merge button stays disabled and the API answers `405 3 of 3 required status
+checks are failing`.
+
+The pre-push hook is still installed, now as a fast pre-flight rather than the
+gate:
 
 ```bash
 git config core.hooksPath .githooks     # once per clone
 ```
 
-It reads the check runs of the commit being pushed and refuses `main` unless
-**all three** suites succeeded on it. A commit that was never pushed at all is
-refused too -- open a pull request, let CI run, then merge; a direct push to a
-commit no runner has seen can never satisfy the rule by construction.
-
-Be clear about what this is: a guard on **this clone**. `git push --no-verify`,
-the GitHub web UI, and any other machine all bypass it. Making the repository
-public, or upgrading to Pro, is what moves the rule to the server.
+It reads the check runs of the commit being pushed and prints the legs that are
+red, so a doomed push fails in a second instead of after a round trip. It is a
+convenience and a diagnostic. GitHub is the enforcement.
 
 ```bash
 git push --dry-run        # asks the hook without sending anything
-git push --no-verify      # explicitly accept an unverified main
 ```
 
 ### The flow: branch, pull request, three greens, merge
 
 Because a fresh commit has no run yet, **nothing** goes to `main` by direct push.
-Branches are not gated (the hook only inspects `main`), so the work goes there:
+Branches are not gated -- the rule applies to `main` only -- so the work goes
+there:
 
 ```bash
 git switch -c fix/whatever
@@ -1028,9 +1051,9 @@ git push -u origin fix/whatever        # branches are ungated; main is watched
 Open the pull request with the link git prints, or the *Compare & pull request*
 button on the repository page -- `gh` is not required and is not installed here.
 
-The pull request head gets its own run. **Merge only when all three jobs are
-green**; the checks are listed under the PR and the badge on this page reports
-the same workflow. Then bring `main` down to the machine:
+The pull request head gets its own run. The merge is only possible when all
+three jobs are green; the checks are listed under the PR and the badge on this
+page reports the same workflow. Then bring `main` down to the machine:
 
 ```bash
 git switch main
@@ -1056,9 +1079,13 @@ new one is a failure to fix, not a line to add.
 
 A merge made in the web UI is a single commit on `main` that no runner has seen,
 which is fine: the work under it was verified on the PR head, and the new merge
-commit gets its own run. The unavoidable case is an emergency -- `git push
---no-verify` lands it, the hook is skipped, and CI still runs afterwards; if it
-comes back red, `main` is red and the fix is another branch.
+commit gets its own run.
+
+There is no way to land a red commit on `main`. A broken leg stops the merge
+button, the API refuses with `405`, and `git push --no-verify` is rejected by the
+server. If something genuinely must land while CI is broken, the only route is
+to remove the rule (Settings -> Rules), push, and restore it -- an act recorded
+in the repository's audit log. Fixing the leg is almost always cheaper.
 
 ## Status
 
