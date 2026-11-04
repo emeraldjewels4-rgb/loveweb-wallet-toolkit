@@ -62,6 +62,23 @@ function db_config(): ?array
 const DB_PRIMARY = 'toolkit';
 
 /**
+ * The database the blockchain interface reports on, and the chain it is wired to.
+ *
+ * These are the defaults a first run seeds into `chain_connections`; from then on
+ * the stored row is the truth, so changing the endpoint is an UPDATE rather than
+ * a deploy. Nothing reads the constants again once the row exists.
+ */
+const CHAIN_LABEL = 'lovewebconnection';
+const CHAIN_NETWORK = 'polygon';
+const CHAIN_ID = 137;
+const CHAIN_RPC = 'https://polygon-bor-rpc.publicnode.com';
+const CHAIN_CURRENCY = 'POL';
+const CHAIN_EXPLORER = 'https://polygonscan.com';
+
+/** The host group every connection is surfaced under. */
+const CHAIN_GATEWAY = 'web9999';
+
+/**
  * Every configured database as label => physical name, primary first.
  * The labels are what the pages show; the names are what MySQL knows.
  *
@@ -565,6 +582,231 @@ function merged_status(): array
     } catch (Throwable $exc) {
         // No table yet is not an error: the first merge creates it.
         $status['on'] = 0;
+    }
+
+    return $status;
+}
+
+/**
+ * The table that holds the chain each label is connected to.
+ *
+ * One row per label, so the interface asks the database "what is
+ * lovewebconnection connected to" and gets back a stored answer. Two bits are
+ * kept separately and deliberately: `enabled` is whether the connection is
+ * configured and `on` is whether it is live. Collapsing them into one column
+ * makes "switched off on purpose" indistinguishable from "never set up".
+ *
+ * The row lives in the primary database because that is the only database this
+ * user may write to -- `lovewebconnection` is SELECT-only, which
+ * `db_sync.php?action=report` proves from SHOW GRANTS. `label` is what links the
+ * two, and the interface reports `storage` so the difference is never guessed at.
+ */
+function ensure_chain_table(mysqli $link): void
+{
+    mysqli_query(
+        $link,
+        'CREATE TABLE IF NOT EXISTS chain_connections ('
+        . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,'
+        . ' label VARCHAR(64) NOT NULL,'
+        . ' network VARCHAR(32) NOT NULL,'
+        . ' chain_id BIGINT UNSIGNED NOT NULL,'
+        . ' rpc_url VARCHAR(255) NOT NULL,'
+        . ' currency VARCHAR(16) NOT NULL,'
+        . ' explorer VARCHAR(255) NOT NULL,'
+        . ' gateway VARCHAR(64) NOT NULL,'
+        . ' enabled TINYINT(1) NOT NULL DEFAULT 1,'
+        // `on` is a reserved word in MariaDB: unquoted, the whole CREATE fails and
+        // every read silently falls back to defaults, so it is quoted everywhere.
+        . ' `on` TINYINT(1) NOT NULL DEFAULT 1,'
+        . ' updated_at DATETIME NOT NULL,'
+        . ' UNIQUE KEY label_idx (label)'
+        . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+}
+
+/** The stored connection for the interface's label, or null when there is none.
+ *
+ * @return array<string,mixed>|null
+ */
+function chain_row(mysqli $link): ?array
+{
+    $label = CHAIN_LABEL;
+    $statement = mysqli_prepare(
+        $link,
+        'SELECT label, network, chain_id, rpc_url, currency, explorer, gateway, enabled, `on`, updated_at'
+        . ' FROM chain_connections WHERE label = ? LIMIT 1'
+    );
+    mysqli_stmt_bind_param($statement, 's', $label);
+    mysqli_stmt_execute($statement);
+    $result = mysqli_stmt_get_result($statement);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($statement);
+
+    return is_array($row) ? $row : null;
+}
+
+/**
+ * Write the connection row, switched on.
+ *
+ * `on = 1` here is the upgrade: a fresh install and a re-run both land on "live",
+ * and an existing row is pulled to `enabled = 1, on = 1` rather than left as it
+ * was. Switching the interface off afterwards is an UPDATE, not a missing feature.
+ */
+function chain_seed(mysqli $link): void
+{
+    $label = CHAIN_LABEL;
+    $network = CHAIN_NETWORK;
+    $chainId = CHAIN_ID;
+    $rpc = CHAIN_RPC;
+    $currency = CHAIN_CURRENCY;
+    $explorer = CHAIN_EXPLORER;
+    $gateway = CHAIN_GATEWAY;
+
+    $statement = mysqli_prepare(
+        $link,
+        'INSERT INTO chain_connections'
+        . ' (label, network, chain_id, rpc_url, currency, explorer, gateway, enabled, `on`, updated_at)'
+        . ' VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, UTC_TIMESTAMP())'
+        . ' ON DUPLICATE KEY UPDATE enabled = 1, `on` = 1, updated_at = UTC_TIMESTAMP()'
+    );
+    mysqli_stmt_bind_param($statement, 'ssissss', $label, $network, $chainId, $rpc, $currency, $explorer, $gateway);
+    mysqli_stmt_execute($statement);
+    mysqli_stmt_close($statement);
+}
+
+/**
+ * The `web9999` host group: every bound host whose first label is w*9999.
+ *
+ * `web9999` is not itself a bound domain -- the account holds `ww9999.metamask.
+ * x12.mx` and 27 more like it -- so the group is matched on the shape rather than
+ * on one literal name that would match nothing. `all_on` follows the same rule as
+ * `domain_synergy`: 1 only when every member is 1, so a gap inside the group is
+ * not hidden by its ends.
+ *
+ * @return array<string,mixed>
+ */
+function chain_gateway(): array
+{
+    $gateway = array(
+        'name' => CHAIN_GATEWAY,
+        'pattern' => 'w*9999.',
+        'matches' => 0,
+        'on' => 0,
+        'all_on' => 0,
+        'first' => null,
+        'last' => null,
+        'domains' => array(),
+    );
+
+    foreach (domain_map() as $domain => $binding) {
+        if (preg_match('/^(web|w+)9999\./i', (string) $domain) !== 1) {
+            continue;
+        }
+        $gateway['domains'][] = array(
+            'domain' => (string) $domain,
+            'on' => (int) $binding['on'],
+            'database' => $binding['database'],
+        );
+        $gateway['on'] += (int) $binding['on'];
+    }
+
+    $count = count($gateway['domains']);
+    $gateway['matches'] = $count;
+    if ($count > 0) {
+        $gateway['first'] = $gateway['domains'][0]['domain'];
+        $gateway['last'] = $gateway['domains'][$count - 1]['domain'];
+    }
+    $gateway['all_on'] = ($count > 0 && $gateway['on'] === $count) ? 1 : 0;
+
+    return $gateway;
+}
+
+/**
+ * The blockchain interface's state, without touching the network.
+ *
+ * Kept separate from the RPC reads on purpose: `preview.php` publishes this on
+ * every request, and a preview that took 20 seconds because a public RPC was slow
+ * would turn a status page into an outage.
+ *
+ * @return array<string,mixed>
+ */
+function chain_status(): array
+{
+    $status = array(
+        'interface' => 'blockchain',
+        'version' => 1,
+        'label' => CHAIN_LABEL,
+        'network' => CHAIN_NETWORK,
+        'chain_id' => CHAIN_ID,
+        'rpc' => CHAIN_RPC,
+        'currency' => CHAIN_CURRENCY,
+        'explorer' => CHAIN_EXPLORER,
+        'enabled' => 0,
+        // Binary, like every other binding on this account: 01 = live.
+        'on' => 0,
+        'source' => 'defaults',
+        'updated_at' => null,
+        'storage' => array('table' => 'chain_connections', 'database' => null),
+        'bound' => array('label' => CHAIN_LABEL, 'on' => 0, 'connected' => false, 'tables' => 0),
+        'gateway' => chain_gateway(),
+        'domains' => array(),
+    );
+
+    $overview = db_overview();
+    if (isset($overview[CHAIN_LABEL])) {
+        $status['bound'] = array(
+            'label' => CHAIN_LABEL,
+            'on' => (int) $overview[CHAIN_LABEL]['on'],
+            'connected' => (bool) $overview[CHAIN_LABEL]['connected'],
+            'tables' => (int) $overview[CHAIN_LABEL]['table_count'],
+        );
+    }
+
+    $synergy = domain_synergy();
+    $status['domains'] = array(
+        'total' => (int) $synergy['domains'],
+        'on' => (int) $synergy['connected'],
+        'all_on' => (int) $synergy['all_on'],
+    );
+
+    $link = db();
+    if ($link === null) {
+        return $status;
+    }
+
+    try {
+        ensure_chain_table($link);
+        $labels = db_labels();
+        $status['storage']['database'] = isset($labels[DB_PRIMARY]) ? $labels[DB_PRIMARY] : null;
+
+        $row = chain_row($link);
+        if ($row === null) {
+            // Seed once, then read it back: the reply should describe the row that
+            // is stored, not the one this file hoped to store.
+            chain_seed($link);
+            $row = chain_row($link);
+        }
+        if ($row === null) {
+            return $status;
+        }
+
+        $status['network'] = (string) $row['network'];
+        $status['chain_id'] = (int) $row['chain_id'];
+        $status['rpc'] = (string) $row['rpc_url'];
+        $status['currency'] = (string) $row['currency'];
+        $status['explorer'] = (string) $row['explorer'];
+        $status['enabled'] = (int) $row['enabled'];
+        $status['on'] = ((int) $row['enabled'] === 1 && (int) $row['on'] === 1) ? 1 : 0;
+        unset($status['storage']['error']);
+        $status['updated_at'] = (string) $row['updated_at'];
+        $status['source'] = 'database';
+    } catch (Throwable $exc) {
+        // A database problem must not take the page down -- but it must not pass
+        // for success either. The defaults stand, `source` keeps saying they are
+        // defaults, and storage says why. A silently swallowed error here once
+        // left the interface reporting "off" while its table had been rejected
+        // for using the reserved word `on` as a column name.
+        $status['storage']['error'] = 'chain table not ready';
     }
 
     return $status;

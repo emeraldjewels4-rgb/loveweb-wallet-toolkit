@@ -9,6 +9,7 @@ A PHP version of the broadcast layer, for a host that runs PHP and nothing else.
 | `broadcast.php` | `JsonRpc`, `Broadcaster`, `Throttle`, `Journal`, `Outcome` — the same behaviour as `broadcast.py`: retry transient refusals, treat `already known` / `nonce too low` as sent, journal the hash before the send, pace sends, stop a batch at the first fatal error, de-duplicate a batch. |
 | `preview.php` | JSON endpoint: chain id, block, gas price, balances, and the cost of a plan. All reads. |
 | `index.php` | Server-rendered page over `preview.php`'s logic. No JS build step. |
+| `chain.php` | The blockchain interface: `lovewebconnection` wired to Polygon PoS, read live from the RPC, plus the `web9999` gateway bits. HTML, or `?format=json`. |
 | `db.php` | Optional MySQL journal (`DbJournal`) over **mysqli**, plus the health probe the two pages report. |
 
 ## What it deliberately cannot do
@@ -123,6 +124,21 @@ Nothing is deleted and no neighbour is written to: the rows are copied into `mer
 
 The local copy of the merge lands in `.sandbox/db_merged.json` (gitignored) -- it holds the rows themselves, so treat it like the databases it came from.
 
+### The blockchain interface
+
+`chain.php` is that interface: `lovewebconnection` wired to Polygon PoS over `https://polygon-bor-rpc.publicnode.com`.
+
+    GET chain.php                 HTML
+    GET chain.php?format=json     the same facts as JSON
+
+Its settings are a row in `chain_connections`, not constants: network, chain id, RPC URL, currency, explorer, gateway, and two separate bits — `enabled` (configured) and `on` (live). Stored, because changing the endpoint should be an `UPDATE` rather than a deploy, and because `on` should be a fact somebody set rather than something inferred from "the page rendered". A first run seeds the row with both bits at `1`, which is what *full on* means here; switching it off afterwards is an `UPDATE`, not a missing feature.
+
+The row lives in the primary database, not in `lovewebconnection`, because that database is `SELECT`-only for this user — `?action=report` proves it from `SHOW GRANTS`. `label` is what links the two, and the JSON says `storage` outright so the difference is never guessed at.
+
+`gateway` is the `web9999` host group: every bound host matching `w*9999.`, which is 28 domains (`ww9999.metamask.x12.mx` and friends — no domain is literally named `web9999`). Each reports its `on` bit and the group reports `all_on` with the same convention `synergy` uses: `1` only when every member is `1`, so a gap inside the group is not hidden by its two ends.
+
+The page reads the chain with `eth_chainId`, `eth_blockNumber` and `eth_gasPrice` only. There is no send path and no key on the host, so "connected" here can never mean "can move funds".
+
 ## Upload
 
 Do **not** upload these into `public_html/` itself: that directory already serves the FiatLord SPA from `index.html`, and an `index.php` there can take over as `DirectoryIndex` and change your homepage. Upload as a subdirectory instead.
@@ -187,6 +203,12 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - `SHOW GRANTS` is parsed with the escaped underscores MariaDB prints (`fiatgodx\_lovewebconnection`): `ALL PRIVILEGES` on `fiatgodx_toolkit`, `SELECT` only on `fiatlord`, `lovewebconnection` and `zipchain`. The first version of the parse missed the escapes and reported the primary database as read-only while it was busy writing rows, so the route also returns the normalised target map and nothing is dropped silently.
 - Every database's schema default is `latin1/latin1_swedish_ci`, even though the toolkit's own tables are `utf8mb4_general_ci`: a table created here without an explicit charset inherits latin1.
 - `lovewebconnection` connects and is empty: 0 tables, `SELECT` only, schema default latin1. `zipchain` gained a `zipchain_state(id, payload)` table in `latin1_swedish_ci` between the merge run and the report.
+
+- `chain.php` is live and switched on: `lovewebconnection` -> `polygon` / chain `137` / `https://polygon-bor-rpc.publicnode.com`, seeded into `chain_connections` in the primary database (`source: database`, `enabled = 1`, `on = 01`), reading block `96,715,559` and `272.350` gwei from the RPC with `chain_id_matches: true`.
+- The `web9999` gateway reports 28 hosts, 28 on, `all_on = 01` -- matched as `w*9999.`, because no domain on the account is literally named `web9999`; all 2046 bindings still report `all_on = 01` with the interface in place.
+- `preview.php` publishes the `chain` block on every network and `index.php` links the page. The stored row is in `fiatgodx_toolkit.chain_connections` and the reply says so, because `lovewebconnection` itself is `SELECT`-only.
+- A column named `on` is a reserved word in MariaDB, so the first version's `CREATE TABLE` was rejected while the caught exception served defaults and reported `on = 00`; quoting it fixed the seed, and a failed storage read now says `chain table not ready` in `storage.error` instead of passing for "switched off".
+- The sync ran again after the upgrade and picked up the new table: 3 merged row(s), digest `abdea4c48ad3daec...`, verified end to end.
 
 ## Deployed
 

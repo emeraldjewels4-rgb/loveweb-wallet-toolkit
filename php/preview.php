@@ -100,6 +100,8 @@ $response = array(
     'cjd' => cjd_status(),
     // Everything downloaded from every database, merged: count, bytes, digest.
     'merged' => merged_status(),
+    // lovewebconnection wired to Polygon: the stored connection and its on bits.
+    'chain' => chain_status(),
 );
 
 try {

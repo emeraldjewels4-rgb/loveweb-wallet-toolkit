@@ -280,6 +280,9 @@ function h(string $value): string
     </table>
   <?php endif; ?>
 
+  <p style="margin:2rem 0 0;"><a href="chain.php" style="color:#fdba74;">Blockchain interface &rarr;</a>
+    &mdash; <code>lovewebconnection</code> on Polygon, and the <code>web9999</code> gateway.</p>
+
   <footer>
     Port of <code>broadcast.py</code> + a read-only view. Distribution still runs locally,
     where the key lives.
