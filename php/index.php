@@ -236,9 +236,23 @@ function h(string $value): string
       and the journal table is created in this one alone.</p>
   <?php endif; ?>
 
-  <?php $domains = domain_map(); ?>
+  <?php $domains = domain_map(); $synergy = domain_synergy(); ?>
   <?php if ($domains !== array()): ?>
     <h2 style="font-size:1rem;margin:2.25rem 0 .5rem;color:#f8fafc;">Domains &rarr; databases</h2>
+    <p class="<?php echo $synergy['all_on'] === 1 ? 'lead' : 'warn'; ?>" style="margin:.25rem 0 .75rem;">
+      <code><?php echo h($synergy['vector']); ?></code>
+      &mdash; first <code><?php echo (int) $synergy['first']; ?></code>,
+      last <code><?php echo (int) $synergy['last']; ?></code>,
+      <strong><?php echo (int) $synergy['connected']; ?> of <?php echo (int) $synergy['domains']; ?></strong> connected,
+      all together: <code><?php echo $synergy['all_on'] === 1 ? '01' : '00'; ?></code>
+    </p>
+    <?php $defaultLabel = db_default_label(); ?>
+    <?php if ($defaultLabel !== null): ?>
+      <p class="lead" style="margin:.25rem 0 .75rem;">
+        Every other domain on this account &mdash; including any added later &mdash; is attached to
+        <code><?php echo h($defaultLabel); ?></code> by default.
+      </p>
+    <?php endif; ?>
     <table>
       <tr><th>Domain</th><th>On</th><th>Database</th><th>Tables</th></tr>
       <?php foreach ($domains as $domain => $binding): ?>

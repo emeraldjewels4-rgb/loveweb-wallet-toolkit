@@ -284,6 +284,79 @@ function domain_map(): array
 }
 
 /**
+ * The label that every domain not named explicitly falls back to, or null.
+ *
+ * This account has 2,046 domains. Binding them one line at a time would be
+ * 2,046 entries that all say the same thing and a config nobody will maintain;
+ * a default rule binds the whole set, including domains added tomorrow, and
+ * explicit entries above it still win.
+ */
+function db_default_label(): ?string
+{
+    $config = db_config();
+    if ($config === null || empty($config['default'])) {
+        return null;
+    }
+
+    $label = (string) $config['default'];
+    $labels = db_labels();
+
+    return isset($labels[$label]) ? $label : null;
+}
+
+/**
+ * One aggregate over every domain binding, so "is everything connected?" is a
+ * single answer instead of a table somebody has to read.
+ *
+ * `first` and `last` are the first and last integers of the connection vector
+ * (one bit per domain, in config order); `vector` is that whole vector as a
+ * string. Together they let a caller check both ends and the whole set at once
+ * without agreeing on a different convention: all_on is 1 only when every domain
+ * in the vector is 1, so a gap anywhere -- including the middle -- fails it.
+ *
+ * @return array<string,mixed>
+ */
+function domain_synergy(): array
+{
+    $bits = array();
+    $explicit = 0;
+    foreach (domain_map() as $binding) {
+        $bits[] = (int) $binding['on'];
+        $explicit++;
+    }
+
+    // The default rule covers every domain not named explicitly, so it is one
+    // more bit: drop it and "4 of 4" would be true while 2,042 domains were
+    // unattached.
+    $default = db_default_label();
+    if ($default !== null) {
+        $labels = db_labels();
+        $overview = db_overview();
+        $entry = isset($overview[$default]) ? $overview[$default] : null;
+        $bits[] = $entry === null ? 0 : (int) $entry['on'];
+    }
+
+    $count = count($bits);
+    $on = 0;
+    foreach ($bits as $bit) {
+        $on += $bit === 1 ? 1 : 0;
+    }
+    $allOn = ($count > 0 && $on === $count) ? 1 : 0;
+
+    return array(
+        'domains' => $count,
+        'connected' => $on,
+        'first' => $count > 0 ? $bits[0] : 0,
+        'last' => $count > 0 ? $bits[$count - 1] : 0,
+        'vector' => implode('', $bits),
+        'explicit' => $explicit,
+        'default' => $default,
+        'all_on' => $allOn,
+        'on' => $allOn,
+    );
+}
+
+/**
  * Create the journal table if it is absent. Idempotent, so it costs one metadata
  * check per process and cannot fail a page that is otherwise fine.
  *

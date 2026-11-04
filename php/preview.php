@@ -94,6 +94,8 @@ $response = array(
     ),
     // Which database each hosted domain is bound to, and whether it is on.
     'domains' => domain_map(),
+    // All of them at once: first/last integer of the vector, and all_on.
+    'synergy' => domain_synergy(),
 );
 
 try {
