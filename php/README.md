@@ -39,6 +39,21 @@ return array(
 
 That file is gitignored (`php/.gitignore`) and uploaded separately — the deploy job deliberately does not carry it, because credentials do not belong in a repository or in CI logs.
 
+### Which database a domain reads
+
+cPanel has no switch that attaches a database to a domain: a site is bound to one by the config its code reads. That binding is recorded once, in `config.local.php`, and both pages plus the deploy workflow report it:
+
+```php
+'domains' => array(
+    'fiatgod.x10.mx' => 'toolkit',
+    'ww9999.metakakoon.x13.network' => 'toolkit',
+),
+```
+
+The right-hand side is a **label** from `others` (or `toolkit` for the primary), never a physical database name, so a domain cannot be pointed at something the config never registered. Each entry carries the same `on` bit as the database it points at, and a label that does not exist is rendered as `unbound` with the offending label shown — a typo that silently does nothing is worse than one that says so.
+
+Two facts about the deployed hosts are worth recording, because both look like a bug and neither is one: the `metakakoon` names resolve to NXDOMAIN from the public internet (the domains exist in cPanel with document roots, but their DNS is not live), and all of them except `ww9999.metakakoon.x13.network` redirect to `https://fiatgod.x10.mx/`, so they serve the same site. The map binds them anyway, so the database is already correct on the day DNS starts answering.
+
 ### More than one database
 
 The account has four databases, so `config.local.php` names them all: `name` is the primary one (the only one anything writes to), and `others` maps a display label to another database reached with the same credentials:
