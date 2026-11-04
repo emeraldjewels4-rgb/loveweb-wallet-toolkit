@@ -98,6 +98,8 @@ $response = array(
     'synergy' => domain_synergy(),
     // The stored text file, by size and hash only -- never the body.
     'cjd' => cjd_status(),
+    // Everything downloaded from every database, merged: count, bytes, digest.
+    'merged' => merged_status(),
 );
 
 try {

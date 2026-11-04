@@ -407,6 +407,37 @@ function ensure_cjd_table(mysqli $link): void
 }
 
 /**
+ * The table that holds every row downloaded from every database, merged.
+ *
+ * Keyed on the row's identity rather than on a surrogate id: the same row found
+ * in two databases has to merge to one entry, and an auto-increment id would
+ * give you two. `seen_in` keeps how many places the row turned up, so "merged"
+ * does not quietly claim the row only ever existed once.
+ *
+ * LONGTEXT, for the same reason as cjd_source: one of these rows carries a whole
+ * stored file, and a TEXT column stops at 65,535 bytes.
+ */
+function ensure_merged_table(mysqli $link): void
+{
+    mysqli_query(
+        $link,
+        'CREATE TABLE IF NOT EXISTS merged_rows ('
+        . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,'
+        . ' key_sha256 CHAR(64) NOT NULL,'
+        . ' source_table VARCHAR(64) NOT NULL,'
+        . ' source_db VARCHAR(64) NOT NULL,'
+        . ' seen_in INT UNSIGNED NOT NULL DEFAULT 1,'
+        . ' row_bytes INT UNSIGNED NOT NULL,'
+        . ' row_json LONGTEXT NOT NULL,'
+        . ' first_seen DATETIME NOT NULL,'
+        . ' last_seen DATETIME NOT NULL,'
+        . ' UNIQUE KEY key_idx (key_sha256),'
+        . ' KEY source_idx (source_db)'
+        . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+}
+
+/**
  * What the database holds for the stored text file, without the text itself.
  *
  * Read-only and credential-free, so preview.php can publish it: the sha256 is
@@ -452,6 +483,88 @@ function cjd_status(): array
         }
     } catch (Throwable $exc) {
         // No table yet is not an error: the page still renders, stored stays 00.
+    }
+
+    return $status;
+}
+
+/**
+ * What the merged table holds, without a single row of content.
+ *
+ * `digest` is the SHA-256 of every row key in sorted order. That is the point of
+ * it: a caller can prove the table holds exactly the set it just uploaded
+ * without dragging 65 KB rows back over the network to diff them, and the digest
+ * it computes from its own keys either matches or the merge did not land. A row
+ * count alone cannot tell "the same three rows" from "three other rows".
+ *
+ * @return array<string,mixed>
+ */
+function merged_status(): array
+{
+    $status = array(
+        'table' => 'merged_rows',
+        'on' => 0,
+        'rows' => 0,
+        'bytes' => 0,
+        'digest' => null,
+        'last_seen' => null,
+        'sources' => array(),
+    );
+
+    $link = db();
+    if ($link === null) {
+        return $status;
+    }
+
+    try {
+        ensure_merged_table($link);
+
+        $result = mysqli_query(
+            $link,
+            'SELECT COUNT(*) AS rows_total, COALESCE(SUM(row_bytes), 0) AS bytes_total,'
+            . ' MAX(last_seen) AS last_seen FROM merged_rows'
+        );
+        if ($result !== false) {
+            $row = mysqli_fetch_assoc($result);
+            if (is_array($row)) {
+                $status['rows'] = (int) $row['rows_total'];
+                $status['bytes'] = (int) $row['bytes_total'];
+                $status['last_seen'] = $row['last_seen'] === null ? null : (string) $row['last_seen'];
+            }
+            mysqli_free_result($result);
+        }
+
+        // Keys only: 64 bytes per row instead of a whole row, and the digest
+        // proves which rows, not merely how many.
+        $context = hash_init('sha256');
+        $result = mysqli_query($link, 'SELECT key_sha256 FROM merged_rows ORDER BY key_sha256');
+        if ($result !== false) {
+            while ($row = mysqli_fetch_row($result)) {
+                hash_update($context, (string) $row[0]);
+            }
+            mysqli_free_result($result);
+        }
+        $status['digest'] = hash_final($context);
+        $status['on'] = 1;
+
+        $result = mysqli_query(
+            $link,
+            'SELECT source_db, source_table, COUNT(*) AS rows_total FROM merged_rows'
+            . ' GROUP BY source_db, source_table ORDER BY source_db, source_table'
+        );
+        if ($result !== false) {
+            while ($row = mysqli_fetch_assoc($result)) {
+                $status['sources'][] = array(
+                    'database' => (string) $row['source_db'],
+                    'table' => (string) $row['source_table'],
+                    'rows' => (int) $row['rows_total'],
+                );
+            }
+            mysqli_free_result($result);
+        }
+    } catch (Throwable $exc) {
+        // No table yet is not an error: the first merge creates it.
+        $status['on'] = 0;
     }
 
     return $status;

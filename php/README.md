@@ -97,6 +97,31 @@ The account has four databases, so `config.local.php` names them all: `name` is 
 
 **Why mysqli and not PDO.** The x10hosting PHP 8.1 build ships `mysqlnd` + `mysqli` and no PDO whatsoever (`Class "PDO" not found`). The first version of `db.php` used PDO, and so it reported a correctly created, correctly granted database as "configured but not reachable" — it never opened a socket. A probe that printed the real exception found it, and the rewrite targets the driver that is actually installed.
 
+### Downloading and merging every table
+
+`db_sync.php` takes everything out of the databases and puts the merged result back into one table. Two of its three actions can read or write data, so it is guarded exactly like `cjd_store.php`: no `import.key` on the host and it answers `503`, a wrong key is `403`, and the key is never echoed back.
+
+| Request | Does |
+|---|---|
+| `GET ?action=export&limit=N` | Every table of every configured database, rows as JSON. Caps at N rows per table (default 20,000) and marks the table `truncated` when the cap bit. |
+| `POST ?action=merge` | `{"rows": [...]}` into `merged_rows` in the primary database. Every row's key is recomputed here and a row filed under a key that does not describe it is refused. |
+| `GET ?action=status` | Row count, bytes, digest and per-source-table counts of `merged_rows`. |
+
+`sync_database.py` (repository root) drives all three:
+
+    python sync_database.py                  # download, merge, upload, verify
+    python sync_database.py --dry-run         # download and merge locally, send nothing
+    python sync_database.py --no-upload       # use the routes already on the host
+    python sync_database.py --limit 5000      # rows per table in one export
+
+A row's identity is SHA-256 over its table name and its values, computed on the host, never by the caller. The database name is deliberately *not* in that key, so the same row found in two databases merges to one entry whose `seen_in` count records that it appeared twice -- "merged" and "it only ever existed once" are different claims, and this keeps them apart. Keys are sorted before hashing because two schemas can return the same columns in a different order, which would otherwise look like two different rows.
+
+Nothing is deleted and no neighbour is written to: the rows are copied into `merged_rows` in the primary database, and only ever there. That makes the merge repeatable -- the second run upserts the same keys and updates `last_seen` instead of inserting copies.
+
+`merged_status()` publishes the table's digest (SHA-256 over the sorted row keys) in `preview.php` as `merged`. That is what the sync checks: the digest of what it sent has to equal the digest the host reports, and the digest `preview.php` publishes. A row count alone cannot distinguish "the same three rows" from "three other rows"; a digest can, without dragging 65 KB rows back to diff them.
+
+The local copy of the merge lands in `.sandbox/db_merged.json` (gitignored) -- it holds the rows themselves, so treat it like the databases it came from.
+
 ## Upload
 
 Do **not** upload these into `public_html/` itself: that directory already serves the FiatLord SPA from `index.html`, and an `index.php` there can take over as `DirectoryIndex` and change your homepage. Upload as a subdirectory instead.
@@ -151,6 +176,11 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - All four databases on the account connect live: `toolkit` (1 table), and `fiatlord`, `lovewebconnection`, `zipchain` reachable with `SELECT` only and **0 tables each** — they are empty shells, so there was no data in them to merge anywhere.
 - The pages degrade correctly when no MySQL is reachable: four entries, `on=0` / `connected=false`, no PHP notice, no credential in the output.
 - Live connection check after the binary change: primary `on=1` with its journal table ready, and all four databases `on=01`, `connected=true`; `index.php` renders `01` beside each one. The deploy workflow now fails on any `on != 1`.
+
+- Every table in every database downloaded and merged: the export read both tables in `toolkit` (`broadcast_journal` empty, `cjd_source` 1 row) and reported the three empty neighbours as connected with 0 tables; `sync_database.py` merged 1 row (a single 66,510-byte JSON row for a 65,154-byte file), uploaded it, and the merge reply, `?action=status` and `preview.php` all reported the same digest `9e64549755dfadd0...`.
+- The merged row still hashes to its own stored sha256 (`2927b2e5...`, 65,154 bytes and 65,154 characters), and `preview.php`'s `cjd` block reports that same hash — the file survived download → merge → upload instead of being re-encoded on the way.
+- A second full run changed nothing: 1 row, the same digest, `seen_in` still 1.
+- The route's guard answers `403` with no key and with a wrong one, `405` for a merge over GET, `400` for an unknown action, and `503` when no `import.key` is installed.
 
 ## Deployed
 
