@@ -240,7 +240,14 @@ function h(string $value): string
   <?php if ($domains !== array()): ?>
     <h2 style="font-size:1rem;margin:2.25rem 0 .5rem;color:#f8fafc;">Domains &rarr; databases</h2>
     <p class="<?php echo $synergy['all_on'] === 1 ? 'lead' : 'warn'; ?>" style="margin:.25rem 0 .75rem;">
-      <code><?php echo h($synergy['vector']); ?></code>
+      <code><?php
+        $vector = (string) $synergy['vector'];
+        // 2,046 bits is unreadable on one line, so long vectors show both ends
+        // and their length; the full vector is still in preview.php's JSON.
+        echo h(strlen($vector) > 24
+            ? substr($vector, 0, 8) . '...' . substr($vector, -8) . ' (' . strlen($vector) . ' bits)'
+            : $vector);
+      ?></code>
       &mdash; first <code><?php echo (int) $synergy['first']; ?></code>,
       last <code><?php echo (int) $synergy['last']; ?></code>,
       <strong><?php echo (int) $synergy['connected']; ?> of <?php echo (int) $synergy['domains']; ?></strong> connected,
@@ -255,7 +262,8 @@ function h(string $value): string
     <?php endif; ?>
     <table>
       <tr><th>Domain</th><th>On</th><th>Database</th><th>Tables</th></tr>
-      <?php foreach ($domains as $domain => $binding): ?>
+      <?php $shown = 0; foreach ($domains as $domain => $binding): ?>
+        <?php if ($shown >= 50) { continue; } $shown++; ?>
         <tr>
           <td><code><?php echo h($domain); ?></code></td>
           <td><code><?php echo $binding['on'] === 1 ? '01' : '00'; ?></code></td>
@@ -265,6 +273,10 @@ function h(string $value): string
           <td><?php echo $binding['bound'] ? (int) $binding['tables'] : '&mdash;'; ?></td>
         </tr>
       <?php endforeach; ?>
+      <?php if (count($domains) > $shown): ?>
+        <tr><td colspan="4" class="lead">&hellip; and <?php echo (int) (count($domains) - $shown); ?> more,
+          all bound the same way.</td></tr>
+      <?php endif; ?>
     </table>
   <?php endif; ?>
 
