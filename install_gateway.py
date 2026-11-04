@@ -47,6 +47,7 @@ HOSTS = (
     "web9999.metakakoon.x13.mx",
     "web9999.metakakoon.x13.network",
     "web9999.metakakoon.mind.exchange",
+    "web9999.metakakoon.x12.network",
 )
 DOCUMENT_ROOT = "public_html/toolkit"
 PROBE = "/chain.php?format=json"
