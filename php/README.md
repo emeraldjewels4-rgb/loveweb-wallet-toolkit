@@ -46,13 +46,19 @@ cPanel has no switch that attaches a database to a domain: a site is bound to on
 ```php
 'domains' => array(
     'fiatgod.x10.mx' => 'toolkit',
-    'ww9999.metakakoon.x13.network' => 'toolkit',
+    'ww9999.metakakoon.x12.com' => 'toolkit',
 ),
 ```
 
 The right-hand side is a **label** from `others` (or `toolkit` for the primary), never a physical database name, so a domain cannot be pointed at something the config never registered. Each entry carries the same `on` bit as the database it points at, and a label that does not exist is rendered as `unbound` with the offending label shown — a typo that silently does nothing is worse than one that says so.
 
-Two facts about the deployed hosts are worth recording, because both look like a bug and neither is one: the `metakakoon` names resolve to NXDOMAIN from the public internet (the domains exist in cPanel with document roots, but their DNS is not live), and all of them except `ww9999.metakakoon.x13.network` redirect to `https://fiatgod.x10.mx/`, so they serve the same site. The map binds them anyway, so the database is already correct on the day DNS starts answering.
+A binding is not a hosting decision, and the difference matters here. Three separate states are worth recording, because all three look like bugs and none of them is one:
+
+- **`ww9999.metakakoon.x12.com` is not on this account.** The cPanel domain search returns no results for it and it is NXDOMAIN publicly, so the entry below binds a database to a host that has not been created yet. It is written down so the binding is already right on the day the domain is added (Create A New Domain) and its DNS points at this server — it does not make the host exist, and nothing is served there today.
+- **The other `metakakoon` names do exist in cPanel** with document roots, but their public DNS answers NXDOMAIN, so they cannot be reached from outside either.
+- **All of them except `ww9999.metakakoon.x13.network` redirect to `https://fiatgod.x10.mx/`**, so they serve the same site as the toolkit (and that one host keeps its own document root).
+
+The map binds them anyway: a checked config beats four applications each pasting their own credentials, and a wrong binding is visible on the page instead of buried in a deploy script.
 
 ### More than one database
 
