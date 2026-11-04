@@ -92,6 +92,8 @@ $response = array(
         },
         db_overview()
     ),
+    // Which database each hosted domain is bound to, and whether it is on.
+    'domains' => domain_map(),
 );
 
 try {

@@ -240,6 +240,50 @@ function db_overview(): array
 }
 
 /**
+ * Domain -> database, from config.local.php `domains`.
+ *
+ * cPanel has no "attach a database to a domain" switch: a database is bound to a
+ * site by whatever config the code in that document root reads. This is that
+ * config, stated once and checkable, instead of the same three credentials pasted
+ * into four applications.
+ *
+ * A domain mapped to a label nobody configured is reported with `database` null
+ * rather than dropped: a typo that silently does nothing is worse than one that
+ * says it did nothing.
+ *
+ * @return array<string,array<string,mixed>>
+ */
+function domain_map(): array
+{
+    $config = db_config();
+    if ($config === null || empty($config['domains']) || !is_array($config['domains'])) {
+        return array();
+    }
+
+    $labels = db_labels();
+    $overview = db_overview();
+    $map = array();
+
+    foreach ($config['domains'] as $domain => $label) {
+        $domain = strtolower(trim((string) $domain));
+        $label = (string) $label;
+        if ($domain === '') {
+            continue;
+        }
+        $entry = isset($overview[$label]) ? $overview[$label] : null;
+        $map[$domain] = array(
+            'label' => $label,
+            'database' => isset($labels[$label]) ? $labels[$label] : null,
+            'on' => $entry === null ? 0 : (int) $entry['on'],
+            'tables' => $entry === null ? 0 : (int) $entry['table_count'],
+            'bound' => $entry !== null,
+        );
+    }
+
+    return $map;
+}
+
+/**
  * Create the journal table if it is absent. Idempotent, so it costs one metadata
  * check per process and cannot fail a page that is otherwise fine.
  *

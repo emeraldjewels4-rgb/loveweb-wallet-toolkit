@@ -236,6 +236,24 @@ function h(string $value): string
       and the journal table is created in this one alone.</p>
   <?php endif; ?>
 
+  <?php $domains = domain_map(); ?>
+  <?php if ($domains !== array()): ?>
+    <h2 style="font-size:1rem;margin:2.25rem 0 .5rem;color:#f8fafc;">Domains &rarr; databases</h2>
+    <table>
+      <tr><th>Domain</th><th>On</th><th>Database</th><th>Tables</th></tr>
+      <?php foreach ($domains as $domain => $binding): ?>
+        <tr>
+          <td><code><?php echo h($domain); ?></code></td>
+          <td><code><?php echo $binding['on'] === 1 ? '01' : '00'; ?></code></td>
+          <td><?php echo $binding['database'] === null
+              ? 'unbound (no such database label: ' . h($binding['label']) . ')'
+              : '<code>' . h($binding['database']) . '</code>'; ?></td>
+          <td><?php echo $binding['bound'] ? (int) $binding['tables'] : '&mdash;'; ?></td>
+        </tr>
+      <?php endforeach; ?>
+    </table>
+  <?php endif; ?>
+
   <footer>
     Port of <code>broadcast.py</code> + a read-only view. Distribution still runs locally,
     where the key lives.
