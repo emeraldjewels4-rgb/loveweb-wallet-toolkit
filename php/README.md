@@ -60,6 +60,8 @@ A binding is not a hosting decision, and the difference matters here. Three sepa
 
 The map binds them anyway: a checked config beats four applications each pasting their own credentials, and a wrong binding is visible on the page instead of buried in a deploy script.
 
+The deployed config lists **every domain explicitly, one line each** — 2,046 entries on this account. `'default' => '<label>'` is supported as the alternative: it binds every domain not named above, including ones added later, which is far less to maintain but says nothing about any individual host. Explicit entries win where both exist, and `domain_synergy()` counts the default rule as one more bit, so the aggregate can never report "all connected" while thousands of hosts are attached to nothing.
+
 ### More than one database
 
 The account has four databases, so `config.local.php` names them all: `name` is the primary one (the only one anything writes to), and `others` maps a display label to another database reached with the same credentials:
