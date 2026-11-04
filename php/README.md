@@ -139,6 +139,28 @@ The row lives in the primary database, not in `lovewebconnection`, because that 
 
 The page reads the chain with `eth_chainId`, `eth_blockNumber` and `eth_gasPrice` only. There is no send path and no key on the host, so "connected" here can never mean "can move funds".
 
+### Installing the gateway hosts
+
+`install_gateway.py` (repository root) is that step, and it separates the three things people usually say in one breath:
+
+    python install_gateway.py            # DNS and HTTP per host, no credentials
+    python install_gateway.py --plan     # ask cPanel which of the five exist
+    python install_gateway.py --apply    # create the missing ones at public_html/toolkit
+
+For each of the five `web9999.metakakoon.*` hosts, all of these have to be true, and none implies the others:
+
+1. the zone is delegated and has an A/AAAA record pointing at this account;
+2. cPanel has the domain, with document root `public_html/toolkit`;
+3. the host answers `/chain.php` with `on = 01`.
+
+The document root is the part that gets missed: a new domain arrives with an empty root and answers 404 while the interface sits one directory away, and this FTP user is chrooted to the toolkit directory, so that root cannot be created from here. Point it at `public_html/toolkit` and each host serves the interface with no second deploy, because the gateway list is computed from the bindings rather than listed in a file.
+
+DNS is a separate owner. The zones these hosts belong to are not served by this cPanel server -- `x12.mx` answers from dyna-ns.net, `x13.mx` and `x0.network` from Cloudflare, `mind.exchange` from helloserver.win, and `x13.network` returns no SOA at all -- so the record belongs at that provider. The script reports which host is missing its record instead of pretending a zone edit here would publish it.
+
+## Upload
+
+Do **not** upload these into `public_html/` itself
+
 ## Upload
 
 Do **not** upload these into `public_html/` itself: that directory already serves the FiatLord SPA from `index.html`, and an `index.php` there can take over as `DirectoryIndex` and change your homepage. Upload as a subdirectory instead.
@@ -212,6 +234,10 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 
 - Five `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: the account reports 2051 bindings with `all_on = 01`, and the `web9999` gateway 33 hosts, every one on.
 - A binding is not DNS: only `web9999.metakakoon.x12.mx` resolves (191.223.34.55, answering `404` at `/` and at `/toolkit/chain.php`), and the other four have no record at all. The five are connected in the matrix; serving the interface at those names still needs them provisioned in cPanel with DNS pointed here.
+
+- The five hosts are **bound and on** in the matrix, but the install is not finished: `web9999.metakakoon.x12.mx` resolves to `191.223.34.55` -- a different server from `fiatgod.x10.mx` at `162.253.224.22` -- and answers `404` at `/chain.php`; the other four have no A/AAAA record at all.
+- Their zones are not on this server (`dyna-ns.net` for `x12.mx`, Cloudflare for `x13.mx` and `x0.network`, `helloserver.win` for `mind.exchange`, and `x13.network` returns no SOA), so the records belong at those providers, and no credentials for any of them exist here.
+- FTP is chrooted to the toolkit directory -- `cwd ..`, `cwd /` and `cwd ../..` all land back at `/` -- so neither a document root for another host nor a DNS record can be created from this machine. What is left is a cPanel domain per host with root `public_html/toolkit`, plus one record per zone at the provider that owns it.
 
 ## Deployed
 
