@@ -380,6 +380,84 @@ function ensure_schema(mysqli $link): void
 }
 
 /**
+ * The table that holds a text file from the document root, byte for byte.
+ *
+ * cPanel gives this account no shell, so the only PHP that can reach the
+ * database is the PHP served here; cjd_store.php inserts into this table and
+ * this function makes sure the table exists first.
+ *
+ * LONGTEXT rather than TEXT: a 64 KiB TEXT column is a 65,535-byte ceiling and
+ * the file being stored is 65,154 bytes -- close enough that the next edit would
+ * hit it, and a silent truncation is the one failure this table must not have.
+ */
+function ensure_cjd_table(mysqli $link): void
+{
+    mysqli_query(
+        $link,
+        'CREATE TABLE IF NOT EXISTS cjd_source ('
+        . ' id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,'
+        . ' filename VARCHAR(64) NOT NULL,'
+        . ' bytes INT UNSIGNED NOT NULL,'
+        . ' sha256 CHAR(64) NOT NULL,'
+        . ' content LONGTEXT NOT NULL,'
+        . ' stored_at DATETIME NOT NULL,'
+        . ' UNIQUE KEY filename_idx (filename)'
+        . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+}
+
+/**
+ * What the database holds for the stored text file, without the text itself.
+ *
+ * Read-only and credential-free, so preview.php can publish it: the sha256 is
+ * what turns "I uploaded it" into a checkable claim, and it costs one row read
+ * instead of dragging 65 KB of body through every preview request.
+ *
+ * @return array<string,mixed>
+ */
+function cjd_status(): array
+{
+    $status = array(
+        'stored' => false,
+        'on' => 0,
+        'file' => null,
+        'bytes' => 0,
+        'sha256' => null,
+        'stored_at' => null,
+    );
+
+    $link = db();
+    if ($link === null) {
+        return $status;
+    }
+
+    try {
+        $result = mysqli_query(
+            $link,
+            'SELECT filename, bytes, sha256, stored_at FROM cjd_source ORDER BY id DESC LIMIT 1'
+        );
+        if ($result !== false) {
+            $row = mysqli_fetch_assoc($result);
+            if (is_array($row)) {
+                $status = array(
+                    'stored' => true,
+                    'on' => 1,
+                    'file' => (string) $row['filename'],
+                    'bytes' => (int) $row['bytes'],
+                    'sha256' => (string) $row['sha256'],
+                    'stored_at' => (string) $row['stored_at'],
+                );
+            }
+            mysqli_free_result($result);
+        }
+    } catch (Throwable $exc) {
+        // No table yet is not an error: the page still renders, stored stays 00.
+    }
+
+    return $status;
+}
+
+/**
  * A Journal with the same shape as broadcast.php's file journal, in MySQL.
  *
  * record() is written before a send for the same reason the file one is: an

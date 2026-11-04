@@ -62,6 +62,22 @@ The map binds them anyway: a checked config beats four applications each pasting
 
 The deployed config lists **every domain explicitly, one line each** — 2,046 entries on this account. `'default' => '<label>'` is supported as the alternative: it binds every domain not named above, including ones added later, which is far less to maintain but says nothing about any individual host. Explicit entries win where both exist, and `domain_synergy()` counts the default rule as one more bit, so the aggregate can never report "all connected" while thousands of hosts are attached to nothing.
 
+### Adding a domain after the fact
+
+The explicit list does not grow by itself, so `sync_domains.py` (repository root) closes that gap: it takes the account's domain list, appends one line for each domain the config does not already name, lints the result, uploads it, and then checks that the live site reports the new count.
+
+    python sync_domains.py                  # list from .sandbox/domains.txt
+    python sync_domains.py --from-cpanel     # ask cPanel UAPI directly
+    python sync_domains.py --dry-run         # report, write nothing
+
+`--from-cpanel` needs `CPANEL_HOST`, `CPANEL_USER` and `CPANEL_TOKEN` (cPanel → Security → Manage API Tokens) and no browser, which makes it the mode to put on a schedule. Without a token, the file source uses the list captured from the cPanel Domains page. Existing lines are never rewritten, so a second run adds nothing; upload credentials (`FTP_HOST`/`FTP_USER`/`FTP_PASSWORD`, or `.sandbox/ftp.json`) are never printed, and a live count that does not match makes the command exit non-zero instead of reporting success.
+
+### The stored text file
+
+`cjd.php` in this directory is not PHP: it is a 65 KB text file of bracketed hostnames, served as-is. `cjd_store.php` reads it and writes it into `cjd_source` in the primary database — one row holding the whole file, its byte count and its sha256. That is a write endpoint, so it refuses to do anything unless `import.key` (gitignored) sits next to it and the request presents that value, and the file name must match a plain-filename allowlist and resolve inside this directory. The reply reports the row read back out of the database, so "it landed" means the bytes are in MySQL rather than that PHP answered 200. `preview.php` publishes the same row's size and hash — never the body — as `cjd`, which is what makes the claim checkable from outside.
+
+The column is `LONGTEXT`, not `TEXT`: a `TEXT` column stops at 65,535 bytes and this file is 65,154, close enough that the next edit would truncate silently.
+
 ### More than one database
 
 The account has four databases, so `config.local.php` names them all: `name` is the primary one (the only one anything writes to), and `others` maps a display label to another database reached with the same credentials:

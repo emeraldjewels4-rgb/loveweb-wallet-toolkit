@@ -71,6 +71,12 @@ jobs:
             # Real database credentials. Never in the repository, so never in a
             # checkout -- excluded explicitly so a local copy cannot slip in.
             **/config.local.php
+            # Content, not source: the text file cjd_store.php copies into the
+            # database, and the key that route needs. Both are gitignored, so a
+            # checkout never has them -- named here so the sync never treats them
+            # as extraneous and the route keeps working across a deploy.
+            **/cjd.php
+            **/import.key
 
       # A successful upload is not a working site. This is the check that would
       # have caught /toolkit/ serving the SPA's catch-all instead of index.php.

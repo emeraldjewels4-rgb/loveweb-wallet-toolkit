@@ -96,6 +96,8 @@ $response = array(
     'domains' => domain_map(),
     // All of them at once: first/last integer of the vector, and all_on.
     'synergy' => domain_synergy(),
+    // The stored text file, by size and hash only -- never the body.
+    'cjd' => cjd_status(),
 );
 
 try {
