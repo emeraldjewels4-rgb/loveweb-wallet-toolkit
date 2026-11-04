@@ -241,6 +241,8 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - Their zones are not on this server (`dyna-ns.net` for `x12.mx`, Cloudflare for `x13.mx` and `x0.network`, `helloserver.win` for `mind.exchange`, and `x13.network` returns no SOA), so the records belong at those providers, and no credentials for any of them exist here.
 - FTP is chrooted to the toolkit directory -- `cwd ..`, `cwd /` and `cwd ../..` all land back at `/` -- so neither a document root for another host nor a DNS record can be created from this machine. What is left is a cPanel domain per host with root `public_html/toolkit`, plus one record per zone at the provider that owns it.
 
+- `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, the `web9999` gateway at 34 hosts all on, and `install_gateway.py` managing six. It has no DNS record yet, so it is bound and dark like four of the other five.
+
 ## Deployed
 
 Live on x10hosting's Infinity plan (server `s22.infinitysrv.com`), account `fiatgodx`, home `/home/fiatgodx`:
