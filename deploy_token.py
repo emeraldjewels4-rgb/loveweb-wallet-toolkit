@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 
+import broadcast
 import eth_common
 
 DECIMALS = 18
@@ -429,10 +430,12 @@ def main(argv=None) -> int:
             return 1
 
     print("\nBroadcasting...")
-    try:
-        w3.eth.send_raw_transaction(signed.raw_transaction)
-    except Exception as exc:
-        raise SystemExit(f"Error: the network rejected the transaction ({exc}).")
+    # Retried through broadcast.py: a rate-limited endpoint no longer wastes an
+    # already-signed deployment, and because the signature is fixed a retry
+    # cannot deploy a second contract.
+    outcome = broadcast.broadcast(w3, signed.raw_transaction)
+    if not outcome.ok:
+        raise SystemExit(f"Error: the network rejected the transaction ({outcome.error}).")
 
     out = Path(args.out or f"deployment-{args.network}.json")
     # Written BEFORE the receipt is fetched. A broadcast transaction and its gas

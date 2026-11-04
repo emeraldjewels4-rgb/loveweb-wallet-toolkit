@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from pathlib import Path
 
+import broadcast
 import eth_common
 # DECIMALS, TOKEN_SCALE, the supply parser and the console guard are imported
 # from deploy_token rather than copied: the 28-significant-digit rounding bug in
@@ -565,14 +566,15 @@ def main(argv=None) -> int:
         save_runs(out, doc)
         print(f"\n[{index}/{len(fits)}] broadcasting {human(row['amount_wei'])} "
               f"-> {human(row['new_total_wei'])}\n  tx {tx_hash}")
-        try:
-            w3.eth.send_raw_transaction(signed.raw_transaction)
-        except Exception as exc:
-            entry.update({"status": "rejected", "error": str(exc)[:200]})
-            run.update({"status": "failed", "error": f"broadcast rejected: {exc}"})
+        # Shared path: a transient refusal is retried and "already known" counts
+        # as sent. The signature is fixed, so a retry cannot mint twice.
+        outcome = broadcast.broadcast(w3, signed.raw_transaction)
+        if not outcome.ok:
+            entry.update({"status": "rejected", "error": outcome.error[:200]})
+            run.update({"status": "failed", "error": f"broadcast rejected: {outcome.error}"})
             save_runs(out, doc)
             raise SystemExit(
-                f"Error: the network rejected round {row['round']} ({exc}).\n"
+                f"Error: the network rejected round {row['round']} ({outcome.error}).\n"
                 f"  record: {out}\n"
                 "Nothing further was sent. Fix the cause and re-run; already-confirmed\n"
                 "rounds are in the record and can be skipped with a smaller --doubles."
