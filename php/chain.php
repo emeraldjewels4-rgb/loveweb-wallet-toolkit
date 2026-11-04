@@ -77,6 +77,7 @@ function bit(int $value): string
 $gateway = $settings['gateway'];
 $bound = $settings['bound'];
 $domains = $settings['domains'];
+$network = $settings['network_hosts'];
 $shown = 0;
 ?>
 <!DOCTYPE html>
@@ -156,6 +157,10 @@ $shown = 0;
     <tr><th>All domains</th><td>
       <?php echo (int) $domains['total']; ?> bound, <?php echo (int) $domains['on']; ?> on,
       all together <code><?php echo bit((int) $domains['all_on']); ?></code>
+    </td></tr>
+    <tr><th><?php echo h((string) $network['suffix']); ?> domains</th><td>
+      <?php echo (int) $network['total']; ?> bound, <?php echo (int) $network['on']; ?> on,
+      all together <code><?php echo bit((int) $network['all_on']); ?></code>
     </td></tr>
   </table>
 

@@ -769,6 +769,30 @@ function chain_status(): array
         'all_on' => (int) $synergy['all_on'],
     );
 
+    // The .network hosts as one group of their own. "Every domain is on" and "every
+    // .network host is on" are different claims: the first can be true while the
+    // second is not, and a group that reports its own count is the only way to see
+    // which of the two you actually have.
+    //
+    // Keyed `network_hosts`, not `network`: `network` is already this chain's name
+    // ("polygon"), and reusing the key left the later row read overwriting the
+    // group with a string while chain.php went on treating it as an array.
+    $networkTotal = 0;
+    $networkOn = 0;
+    foreach (domain_map() as $domain => $binding) {
+        if (substr(strtolower((string) $domain), -8) !== '.network') {
+            continue;
+        }
+        $networkTotal++;
+        $networkOn += (int) $binding['on'];
+    }
+    $status['network_hosts'] = array(
+        'suffix' => '.network',
+        'total' => $networkTotal,
+        'on' => $networkOn,
+        'all_on' => ($networkTotal > 0 && $networkOn === $networkTotal) ? 1 : 0,
+    );
+
     $link = db();
     if ($link === null) {
         return $status;

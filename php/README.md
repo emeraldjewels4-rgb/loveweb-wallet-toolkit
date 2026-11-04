@@ -135,6 +135,8 @@ Its settings are a row in `chain_connections`, not constants: network, chain id,
 
 The row lives in the primary database, not in `lovewebconnection`, because that database is `SELECT`-only for this user — `?action=report` proves it from `SHOW GRANTS`. `label` is what links the two, and the JSON says `storage` outright so the difference is never guessed at.
 
+- `network_hosts` reports the `.network` hosts as a group of their own on the interface and in `preview.php`: 1344 hosts, all 1344 on, `all_on = 01`, inside a 2052-binding matrix that is also all on -- and the database sync ran again afterwards, merging 3 rows with digest `abdea4c48ad3daec...`, confirmed by the merge reply, `?action=status` and the preview., because "every domain is on" and "every `.network` host is on" are separate claims: the whole matrix can be `01` while a suffix inside it is not, and only a group with its own count shows which one you have.
+
 `gateway` is the `web9999` host group: every bound host matching `w*9999.`, which is 28 domains (`ww9999.metamask.x12.mx` and friends — no domain is literally named `web9999`). Each reports its `on` bit and the group reports `all_on` with the same convention `synergy` uses: `1` only when every member is `1`, so a gap inside the group is not hidden by its two ends.
 
 The page reads the chain with `eth_chainId`, `eth_blockNumber` and `eth_gasPrice` only. There is no send path and no key on the host, so "connected" here can never mean "can move funds".
