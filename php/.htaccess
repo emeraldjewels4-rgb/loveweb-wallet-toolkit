@@ -1,0 +1,4 @@
+# Serve this directory with PHP, not the SPA in the parent directory.
+# Without this, the parent rewrite sends /toolkit/ to the FiatLord index.html.
+DirectoryIndex index.php
+RewriteEngine Off

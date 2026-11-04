@@ -15,6 +15,18 @@
 # Verified by running the full suite against these exact pins in that
 # environment: 725 checks, exit 0.
 #
+# REFRESHED 2026-11-04: five packages were re-resolved against current PyPI
+# releases -- cbor2, py-solc-x, pydantic, pydantic-core and websockets, all at
+# patch or minor level. The refresh came from a real resolution
+# (`pip install --dry-run --ignore-installed --report`), not from editing
+# versions by hand, and the resulting set resolves cleanly when this file
+# constrains it.
+#
+# The suite was last RUN against the previous patch levels (898 checks,
+# exit 0, 14 suites). CI is the first executor of these five new pins, which is
+# exactly why every job still freezes what it installed and fails on any drift:
+# a pin nobody installed is a claim, not a verification.
+#
 # CONFIRMED IN CI (run 40830944160, ubuntu-latest): all three legs resolved the
 # identical 64-package set -- no version differed on 3.11 or 3.13, and the only
 # difference from this Windows capture is pywin32, which web3 requires on win32
@@ -51,7 +63,7 @@ attrs==26.1.0
 bip_utils==2.12.3
 bitarray==3.12.3
 cached-property==2.0.1
-cbor2==6.1.5
+cbor2==6.2.0.post2
 certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -82,13 +94,13 @@ parsimonious==0.10.0
 propcache==0.5.4
 py-ecc==8.0.0
 py-evm==0.12.1b1
-py-solc-x==2.0.5
+py-solc-x==2.1.0
 py-sr25519-bindings==0.2.4
 pycparser==3.12
 pycryptodome==3.24.1
 pycryptodomex==3.24.1
-pydantic==2.14.1
-pydantic_core==2.50.1
+pydantic==2.14.2
+pydantic_core==2.50.2
 pytoniq-core-fork==0.1.48
 pyunormalize==18.0.0
 pywin32==312
@@ -104,6 +116,6 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 urllib3==2.8.0
 web3==8.0.0
-websockets==17.3
+websockets==17.4
 x25519==0.0.2
 yarl==1.25.1

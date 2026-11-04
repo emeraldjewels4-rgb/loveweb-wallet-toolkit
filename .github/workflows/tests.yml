@@ -35,15 +35,39 @@ jobs:
     name: suites (py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Only the 3.14 leg sets `experimental`, and only it may fail without
+    # turning the workflow red. The three supported interpreters stay gating.
+    continue-on-error: ${{ matrix.experimental == true }}
 
     # The dependency set pins ranges, not exact versions, so the interpreter is
     # part of what can drift. 3.11 is the oldest version every requirement
-    # allows; 3.13 is the newest. fail-fast is off so one bad interpreter still
-    # leaves the other two results visible.
+    # allows; 3.14 is the newest. fail-fast is off so one bad interpreter still
+    # leaves the others visible.
+    #
+    # 3.14 is the leg that may need work: several dependencies here are beta
+    # releases upstream (eth-tester, py-evm) and a missing cp314 wheel shows up
+    # as an install error, not a test failure. If that happens, the fix is a
+    # constraints-py3.14.txt override for the packages that differ -- never a
+    # widened range, which would hide the portability finding for every leg.
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - python-version: "3.11"
+          - python-version: "3.12"
+          - python-version: "3.13"
+          - python-version: "3.14"
+            # Reported, not required. Probed on 2026-11-04 with
+            #   pip download --no-deps --only-binary=:all: --python-version 3.14
+            # and the blocker is exactly one dependency: coincurve has no cp314
+            # wheel at 21.0.0 through 25.0.0. web3, eth-account, ckzg, eth-tester
+            # and py-evm all publish cp314 wheels. A full closure resolution for
+            # cp314 therefore ends in ResolutionImpossible, so this leg fails at
+            # INSTALL, not at a test -- a wheel problem, not a portability
+            # finding. It runs so the day upstream publishes is visible, and it
+            # does not gate merges while that is true. Flip this to false (and
+            # add it to the required checks) once the leg is green.
+            experimental: true
 
     steps:
       - name: Check out
