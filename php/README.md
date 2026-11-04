@@ -157,6 +157,8 @@ The document root is the part that gets missed: a new domain arrives with an emp
 
 DNS is a separate owner. The zones these hosts belong to are not served by this cPanel server -- `x12.mx` answers from dyna-ns.net, `x13.mx` and `x0.network` from Cloudflare, `mind.exchange` from helloserver.win, and `x13.network` returns no SOA at all -- so the record belongs at that provider. The script reports which host is missing its record instead of pretending a zone edit here would publish it.
 
+The cPanel for this account is the Jupiter theme at `s22.infinitysrv.com:2083`, and its login session is per-browser and expires -- the tab found here answered "Your session cookie is invalid. Please log in again." instead of the Domains page. That leaves two ways to create the five domains: sign in at that host and use Domains -> Create A New Domain with document root `public_html/toolkit`, or create an API token under Security -> Manage API Tokens and write `.sandbox/cpanel.json` with `host`, `user` and `token` so `install_gateway.py --apply` does it. Neither route creates a DNS record, because the zones are not on that server.
+
 ## Upload
 
 Do **not** upload these into `public_html/` itself
