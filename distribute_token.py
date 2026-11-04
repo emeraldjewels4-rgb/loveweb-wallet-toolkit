@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 
+import broadcast
 import eth_common
 from deploy_token import MAINNET_FLAG, make_output_unicode_safe, redact_rpc
 
@@ -652,13 +653,15 @@ def main(argv=None) -> int:
         # rate-limited run never loses a hash that already cost gas.
         save_record(results_path, doc)
 
-        try:
-            w3.eth.send_raw_transaction(signed.raw_transaction)
-        except Exception as exc:
-            entry.update({"status": "rejected", "error": str(exc)[:200]})
+        # Shared path: a transient refusal (an endpoint answering 403) is
+        # retried, and "already known" counts as sent. Neither can pay twice:
+        # what is resent is this exact signature, with this exact nonce.
+        outcome = broadcast.broadcast(w3, signed.raw_transaction)
+        if not outcome.ok:
+            entry.update({"status": "rejected", "error": outcome.error[:200]})
             save_record(results_path, doc)
             raise SystemExit(
-                f"Error: the network rejected the transfer to {to} ({exc}).\n"
+                f"Error: the network rejected the transfer to {to} ({outcome.error}).\n"
                 f"  record: {results_path}\n"
                 "Nothing further was sent. Fix the cause and re-run to resume."
             )

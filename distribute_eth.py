@@ -31,6 +31,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import broadcast
+
 # A value transfer to an address with no code costs exactly this. It is a FLOOR,
 # not the plan: an address that has code runs that code on the way in, so 21,000
 # runs out of gas and the transfer REVERTS -- the value never arrives and the fee
@@ -430,16 +432,18 @@ def main(argv=None) -> int:
             "tx_hash": Web3.to_hex(stx.hash),
             "status": "pending",
         }
-        try:
-            w3.eth.send_raw_transaction(stx.raw_transaction)
-            sent.append((rec, stx.hash))
-        except Exception as exc:
+        # Shared path: a rate-limited endpoint is retried instead of ending the
+        # batch. It cannot double-pay -- the signature is already fixed, so a
+        # retry is these exact bytes with this exact nonce.
+        outcome = broadcast.broadcast(w3, stx.raw_transaction)
+        if not outcome.ok:
             rec["status"] = "error"
-            rec["error"] = str(exc)
+            rec["error"] = outcome.error
             # A nonce collision means our view was stale; stop rather than pile up.
-            print(f"  [{i + 1}/{len(pending)}] FAILED {dest}: {exc}")
+            print(f"  [{i + 1}/{len(pending)}] FAILED {dest}: {outcome.error}")
             records.append(rec)
             break
+        sent.append((rec, stx.hash))
         records.append(rec)
         if (i + 1) % 10 == 0 or i + 1 == len(pending):
             print(f"  broadcast {i + 1}/{len(pending)}")

@@ -36,6 +36,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import broadcast
 import eth_common
 from deploy_token import MAINNET_FLAG
 from distribute_token import human, parse_amount
@@ -406,8 +407,15 @@ def main(argv=None) -> int:
         })
         signed = account.sign_transaction(tx)
         raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
-        tx_hash = w3.eth.send_raw_transaction(raw)
-        hex_hash = Web3.to_hex(tx_hash)
+        outcome = broadcast.broadcast(w3, raw)
+        if not outcome.ok:
+            raise SystemExit(
+                f"Error: the network rejected the {node} transaction ({outcome.error}).\n"
+                f"  record: {results_path}\n"
+                "Nothing further was sent. A retry resends these exact bytes, so it\n"
+                "cannot deposit a second time."
+            )
+        hex_hash = outcome.tx_hash
         print(f"\n{node} broadcast: {hex_hash}")
         record.update({
             "network": net["slug"],
