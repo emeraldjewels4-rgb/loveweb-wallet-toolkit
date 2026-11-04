@@ -106,6 +106,7 @@ The account has four databases, so `config.local.php` names them all: `name` is 
 | `GET ?action=export&limit=N` | Every table of every configured database, rows as JSON. Caps at N rows per table (default 20,000) and marks the table `truncated` when the cap bit. |
 | `POST ?action=merge` | `{"rows": [...]}` into `merged_rows` in the primary database. Every row's key is recomputed here and a row filed under a key that does not describe it is refused. |
 | `GET ?action=status` | Row count, bytes, digest and per-source-table counts of `merged_rows`. |
+| `GET ?action=report` | Read-only survey of every database: server version and defaults, each table's engine and collation, the privileges `SHOW GRANTS` reports, TLS, and the limits that bite (packet size, `sql_mode`, `wait_timeout`). |
 
 `sync_database.py` (repository root) drives all three:
 
@@ -181,6 +182,11 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - The merged row still hashes to its own stored sha256 (`2927b2e5...`, 65,154 bytes and 65,154 characters), and `preview.php`'s `cjd` block reports that same hash — the file survived download → merge → upload instead of being re-encoded on the way.
 - A second full run changed nothing: 1 row, the same digest, `seen_in` still 1.
 - The route's guard answers `403` with no key and with a wrong one, `405` for a merge over GET, `400` for an unknown action, and `503` when no `import.key` is installed.
+
+- `db_sync.php?action=report` surveyed every database without writing a thing: MariaDB 11.4.13-cll-lve, protocol 10, `utf8mb4` available, InnoDB the default engine, no TLS (connections ride the local socket), `sql_mode` empty, `max_allowed_packet` 256 MB, round trip 0.1-0.2 ms.
+- `SHOW GRANTS` is parsed with the escaped underscores MariaDB prints (`fiatgodx\_lovewebconnection`): `ALL PRIVILEGES` on `fiatgodx_toolkit`, `SELECT` only on `fiatlord`, `lovewebconnection` and `zipchain`. The first version of the parse missed the escapes and reported the primary database as read-only while it was busy writing rows, so the route also returns the normalised target map and nothing is dropped silently.
+- Every database's schema default is `latin1/latin1_swedish_ci`, even though the toolkit's own tables are `utf8mb4_general_ci`: a table created here without an explicit charset inherits latin1.
+- `lovewebconnection` connects and is empty: 0 tables, `SELECT` only, schema default latin1. `zipchain` gained a `zipchain_state(id, payload)` table in `latin1_swedish_ci` between the merge run and the report.
 
 ## Deployed
 

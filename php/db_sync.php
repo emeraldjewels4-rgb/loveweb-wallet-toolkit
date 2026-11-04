@@ -8,6 +8,7 @@ declare(strict_types=1);
  *   GET  db_sync.php?action=export&limit=20000   (read)   every table, every database
  *   POST db_sync.php?action=merge                (write)  rows -> merged_rows
  *   GET  db_sync.php?action=status               (read)   what the merged table holds
+ *   GET  db_sync.php?action=report               (read)   what each database is running on
  *
  * Why a route at all: there is no shell and no remote MySQL on this account, so
  * the only code that can read the databases is PHP served from this directory.
@@ -340,6 +341,249 @@ function merge_rows(array $rows): array
     );
 }
 
+/**
+ * One column, one row, or null. Every query here is a read of the server itself.
+ */
+function scalar(mysqli $link, string $sql): ?string
+{
+    try {
+        $result = mysqli_query($link, $sql);
+        if ($result === false) {
+            return null;
+        }
+        $row = mysqli_fetch_row($result);
+        mysqli_free_result($result);
+
+        return is_array($row) ? (string) $row[0] : null;
+    } catch (Throwable $exc) {
+        return null;
+    }
+}
+
+/**
+ * The TLS cipher in use, or '' when the connection is not encrypted.
+ *
+ * Empty is the normal answer on a host that reaches MySQL over the local socket,
+ * and it is worth stating: "no TLS" is a fact about the connection, not a fault.
+ */
+function tls_cipher(mysqli $link): ?string
+{
+    try {
+        $result = mysqli_query($link, "SHOW STATUS LIKE 'Ssl_cipher'");
+        if ($result !== false) {
+            $row = mysqli_fetch_row($result);
+            mysqli_free_result($result);
+            if (is_array($row)) {
+                return (string) ($row[1] ?? '');
+            }
+        }
+    } catch (Throwable $exc) {
+        return null;
+    }
+
+    return null;
+}
+
+/**
+ * What each configured database is running on, and what this user may do to it.
+ *
+ * Everything is a read -- no CREATE, no INSERT, not even a "try a write and see".
+ * The question is "what would have to change before this database could hold
+ * anything", and the answers are the things a connection test hides:
+ *
+ *   - the server version, because utf8mb4 needs 5.5.3+ and CHECK constraints 10.2+;
+ *   - each table's storage engine, because MyISAM has no transactions;
+ *   - the database's own default charset, because a table can be utf8mb4 while
+ *     the schema it lives in is not;
+ *   - the privileges actually held, from SHOW GRANTS rather than inferred from
+ *     "it connected, so it must work" -- those are different claims, and only one
+ *     of them is checkable.
+ *
+ * @return array<string,mixed>
+ */
+function database_report(): array
+{
+    $report = array('generated_at' => gmdate('c'), 'primary' => DB_PRIMARY, 'databases' => array());
+
+    foreach (db_labels() as $label => $name) {
+        $entry = array(
+            'label' => $label,
+            'database' => $name,
+            'on' => 0,
+            'connected' => false,
+            'detail' => 'not reachable',
+            'round_trip_ms' => null,
+            'server' => array(),
+            'database_defaults' => array('charset' => null, 'collation' => null),
+            'tables' => array(),
+            'privileges' => array(),
+            'tls' => null,
+            'features' => array(),
+        );
+
+        $link = db_named($label);
+        if ($link === null) {
+            $report['databases'][$label] = $entry;
+            continue;
+        }
+
+        $entry['on'] = 1;
+        $entry['connected'] = true;
+        $entry['detail'] = 'connected';
+
+        try {
+            $start = microtime(true);
+            mysqli_query($link, 'SELECT 1');
+            $entry['round_trip_ms'] = round((microtime(true) - $start) * 1000, 1);
+        } catch (Throwable $exc) {
+            $entry['detail'] = 'connected, then refused a query';
+        }
+
+        $entry['server'] = array(
+            'version' => scalar($link, 'SELECT VERSION()'),
+            'comment' => scalar($link, 'SELECT @@version_comment'),
+            'protocol' => mysqli_get_proto_info($link),
+            'charset_server' => scalar($link, 'SELECT @@character_set_server'),
+            'collation_server' => scalar($link, 'SELECT @@collation_server'),
+            'max_allowed_packet' => scalar($link, 'SELECT @@max_allowed_packet'),
+            'wait_timeout' => scalar($link, 'SELECT @@wait_timeout'),
+            'sql_mode' => scalar($link, 'SELECT @@sql_mode'),
+            'host_info' => mysqli_get_host_info($link),
+        );
+
+        $entry['features'] = array(
+            'utf8mb4' => scalar(
+                $link,
+                "SELECT COUNT(*) FROM information_schema.CHARACTER_SETS WHERE CHARACTER_SET_NAME = 'utf8mb4'"
+            ) === '1',
+            'innodb' => scalar($link, "SELECT SUPPORT FROM information_schema.ENGINES WHERE ENGINE = 'InnoDB'"),
+            'foreign_keys' => scalar($link, 'SELECT @@foreign_key_checks'),
+        );
+
+        $entry['tls'] = tls_cipher($link);
+
+        try {
+            $statement = mysqli_prepare(
+                $link,
+                'SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME'
+                . ' FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?'
+            );
+            mysqli_stmt_bind_param($statement, 's', $name);
+            mysqli_stmt_execute($statement);
+            $result = mysqli_stmt_get_result($statement);
+            $row = mysqli_fetch_assoc($result);
+            mysqli_stmt_close($statement);
+            if (is_array($row)) {
+                $entry['database_defaults'] = array(
+                    'charset' => (string) $row['DEFAULT_CHARACTER_SET_NAME'],
+                    'collation' => (string) $row['DEFAULT_COLLATION_NAME'],
+                );
+            }
+        } catch (Throwable $exc) {
+            $entry['database_defaults'] = array('charset' => null, 'collation' => null, 'error' => 'schema not readable');
+        }
+
+        try {
+            $statement = mysqli_prepare(
+                $link,
+                'SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, COALESCE(TABLE_ROWS, 0) AS row_estimate,'
+                . " COALESCE(DATA_LENGTH, 0) AS data_bytes FROM information_schema.TABLES"
+                . " WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+            );
+            mysqli_stmt_bind_param($statement, 's', $name);
+            mysqli_stmt_execute($statement);
+            $result = mysqli_stmt_get_result($statement);
+            while ($row = mysqli_fetch_assoc($result)) {
+                $entry['tables'][] = array(
+                    'name' => (string) $row['TABLE_NAME'],
+                    'engine' => $row['ENGINE'] === null ? null : (string) $row['ENGINE'],
+                    'collation' => $row['TABLE_COLLATION'] === null ? null : (string) $row['TABLE_COLLATION'],
+                    'row_estimate' => (int) $row['row_estimate'],
+                    'data_bytes' => (int) $row['data_bytes'],
+                );
+            }
+            mysqli_stmt_close($statement);
+        } catch (Throwable $exc) {
+            // Reachable but not readable: no SELECT on the schema.
+            $entry['detail'] = 'connected, schema not readable';
+        }
+
+        // Privileges from SHOW GRANTS: the only answer that is evidence rather
+        // than an inference. GRANT lines never carry a password.
+        $global = array();
+        $scoped = array();
+        $objects = array();
+        $grantError = null;
+        try {
+            $result = mysqli_query($link, 'SHOW GRANTS');
+            if ($result === false) {
+                throw new RuntimeException('refused');
+            }
+            while ($row = mysqli_fetch_row($result)) {
+                if (preg_match('/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\s+/i', (string) $row[0], $match) !== 1) {
+                    continue;
+                }
+                $privileges = array_map('trim', explode(',', $match[1]));
+
+                // MariaDB prints a database name in GRANT with its underscores
+                // escaped (\`fiatgodx\_toolkit\`.*), so a plain comparison against
+                // the database name never matches and every grant silently reads
+                // as "USAGE only". Normalised here, once, for the whole route.
+                $target = str_replace(array('\\', '`'), '', trim($match[2]));
+                $objects[$target] = array_values(array_unique(
+                    array_merge(isset($objects[$target]) ? $objects[$target] : array(), $privileges)
+                ));
+
+                $sink = null;
+                if ($target === '*.*') {
+                    $sink = 'global';
+                } elseif ($target === $name . '.*') {
+                    $sink = 'scoped';
+                }
+                if ($sink === null) {
+                    continue;
+                }
+                $current = $sink === 'global' ? $global : $scoped;
+                ${$sink} = array_values(array_unique(array_merge($current, $privileges)));
+            }
+            mysqli_free_result($result);
+        } catch (Throwable $exc) {
+            $grantError = 'SHOW GRANTS refused';
+        }
+
+        $held = array_values(array_unique(array_merge($global, $scoped)));
+        $has = static function (string $privilege) use ($held): bool {
+            return in_array('ALL PRIVILEGES', $held, true) || in_array($privilege, $held, true);
+        };
+
+        $entry['privileges'] = array(
+            'global' => $global,
+            'database' => $scoped,
+            // Every GRANT target this user holds, normalised (db => privileges),
+            // so nothing is dropped just because it was not the database asked about.
+            'objects' => $objects,
+            'read' => $has('SELECT'),
+            'write' => $has('INSERT') && $has('UPDATE'),
+            'create' => $has('CREATE'),
+            'error' => $grantError,
+        );
+
+        $report['databases'][$label] = $entry;
+    }
+
+    return array(
+        'action' => 'report',
+        'generated_at' => $report['generated_at'],
+        'primary' => $report['primary'],
+        'databases' => $report['databases'],
+        'php' => array(
+            'version' => PHP_VERSION,
+            'driver' => function_exists('mysqli_connect') ? 'mysqli' : 'none',
+            'client' => defined('MYSQLI_CLIENT_SSL') ? mysqli_get_client_info() : null,
+        ),
+    );
+}
+
 $key = sync_key();
 if ($key === null) {
     refuse(503, 'sync disabled: no import.key on the host');
@@ -359,6 +603,11 @@ $action = isset($_GET['action']) ? strtolower((string) $_GET['action']) : 'expor
 
 if ($action === 'status') {
     echo json_encode(array('action' => 'status', 'merged' => merged_status()), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    exit;
+}
+
+if ($action === 'report') {
+    echo json_encode(database_report(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
     exit;
 }
 
@@ -395,4 +644,4 @@ if ($action === 'merge') {
     exit;
 }
 
-refuse(400, 'unknown action; use export, merge or status');
+refuse(400, 'unknown action; use export, merge, report or status');
