@@ -265,7 +265,9 @@ function db_overview(): array
  * normalised exactly as `db_sync.php?action=report` does it -- without that, every
  * line parses and then fails to match the database it names.
  *
- * These lines never carry a password, so they are safe to print.
+ * The account's own password hash is stripped before anything is returned:
+ * SHOW GRANTS does print it ("IDENTIFIED BY PASSWORD '*<hash>'"), so a grant line
+ * is not safe to publish as-is, whatever it looks like.
  *
  * @return array<int,string> normalised GRANT statements, capped at 20
  */
@@ -292,7 +294,15 @@ function db_grants(string $label): array
         if ($line === '') {
             continue;
         }
-        $grants[] = str_replace(array(chr(92), '`'), '', $line);
+        $line = str_replace(array(chr(92), '`'), '', $line);
+        // MariaDB prints the account's own password hash inside SHOW GRANTS
+        // ("... IDENTIFIED BY PASSWORD '*<hash>'"). Removed here, once, before the
+        // line can reach the JSON, the page, or anything that caches them.
+        $grants[] = (string) preg_replace(
+            '/\s+IDENTIFIED\s+(?:BY\s+PASSWORD|BY|WITH|VIA)\b.*$/i',
+            '',
+            $line
+        );
         if (count($grants) >= 20) {
             break;
         }
