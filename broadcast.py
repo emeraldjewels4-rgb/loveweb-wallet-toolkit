@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 # Matched against "<ExceptionType>: <message>", lowercased. Substrings, because
 # web3 wraps the JSON-RPC error in a ValueError and every client words it
@@ -94,25 +94,47 @@ TRANSIENT_MARKERS = (
     "remotedisconnected",
 )
 
-SENT, ALREADY_KNOWN, FAILED, SKIPPED, DUPLICATE = (
+SENT, ALREADY_KNOWN, FAILED, SKIPPED, DUPLICATE, UNDERPRICED = (
     "sent",
     "already_known",
     "failed",
     "skipped",
     "duplicate",
+    "underpriced",
+)
+
+# A replacement with the same nonce was refused because its fee did not clear the
+# bar. Distinct from "fatal" on purpose: the fix is a higher fee, not a look at
+# the logs, and it is the one failure worth re-signing for.
+REPLACEMENT_MARKERS = (
+    "replacement transaction underpriced",
+    "replacement underpriced",
+    "replacement fee too low",
+    "transaction underpriced",
+    "fee too low",
+    "max fee per gas less than block base fee",
+    "underpriced",
 )
 
 
-def classify(exc: BaseException) -> str:
-    """'already_known', 'transient' or 'fatal' for one send failure."""
-    text = f"{type(exc).__name__}: {exc}".lower()
+def classify_text(text: str) -> str:
+    """'already_known', 'underpriced', 'transient' or 'fatal' for one failure."""
+    lowered = (text or "").lower()
     for marker in ALREADY_KNOWN_MARKERS:
-        if marker in text:
+        if marker in lowered:
             return ALREADY_KNOWN
+    for marker in REPLACEMENT_MARKERS:
+        if marker in lowered:
+            return UNDERPRICED
     for marker in TRANSIENT_MARKERS:
-        if marker in text:
+        if marker in lowered:
             return "transient"
     return "fatal"
+
+
+def classify(exc: BaseException) -> str:
+    """'already_known', 'underpriced', 'transient' or 'fatal' for one send failure."""
+    return classify_text(f"{type(exc).__name__}: {exc}")
 
 
 @dataclass
@@ -123,6 +145,8 @@ class Outcome:
     status: str
     attempts: int = 0
     error: str = ""
+    # Which endpoint answered, redacted. Empty when a caller passed a bare Web3.
+    endpoint: str = ""
 
     @property
     def ok(self) -> bool:
@@ -275,6 +299,12 @@ def broadcast(
                 if journal:
                     journal.record(tx_hash, ALREADY_KNOWN, attempt, last_error)
                 return Outcome(tx_hash, ALREADY_KNOWN, attempt, last_error)
+            if kind == UNDERPRICED:
+                # Re-sending these exact bytes cannot help: the fee is what was
+                # refused. Stopping here lets the caller bump and re-sign.
+                if journal:
+                    journal.record(tx_hash, UNDERPRICED, attempt, last_error)
+                return Outcome(tx_hash, UNDERPRICED, attempt, last_error)
             if kind == "fatal":
                 if journal:
                     journal.record(tx_hash, FAILED, attempt, last_error)
@@ -334,8 +364,8 @@ def broadcast_many(
                             throttle=throttle, attempts=attempts,
                             base_delay=base_delay, max_delay=max_delay, sleep=sleep)
         outcomes.append(outcome)
-        if outcome.status == FAILED:
-            stopped = f"index {index} failed: {outcome.error[:100]}"
+        if outcome.status in (FAILED, UNDERPRICED):
+            stopped = f"index {index} {outcome.status}: {outcome.error[:100]}"
     return outcomes
 
 
@@ -345,6 +375,173 @@ def summarise(outcomes: Iterable[Outcome]) -> str:
     for outcome in outcomes:
         counts[outcome.status] = counts.get(outcome.status, 0) + 1
     return "  ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+
+
+def broadcast_across(
+    pool,
+    signed: Any,
+    *,
+    connect: Any,
+    tx_hash: str | None = None,
+    journal: Journal | None = None,
+    throttle: Throttle | None = None,
+    attempts: int = 4,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    sleep: Any = time.sleep,
+) -> Outcome:
+    """Send through an endpoint pool, rotating away from a failing endpoint.
+
+    `connect(endpoint)` builds a Web3 for that endpoint, so this module still
+    constructs nothing and still holds no key.
+
+    A transient refusal demotes the endpoint and the next one is tried with the
+    same signed bytes -- which is the whole safety argument: rotation resends one
+    signature, never a re-signed transaction with a fresh nonce. A rejection, an
+    "already known" or an underpriced reply ends the loop immediately, because no
+    other endpoint would answer differently.
+    """
+    raw = as_raw_bytes(signed)
+    tx_hash = tx_hash or tx_hash_of(raw)
+    last: Outcome | None = None
+
+    for endpoint in pool.order():
+        outcome = broadcast(
+            connect(endpoint), raw,
+            tx_hash=tx_hash, journal=journal, throttle=throttle,
+            attempts=attempts, base_delay=base_delay, max_delay=max_delay, sleep=sleep,
+        )
+        outcome.endpoint = getattr(endpoint, "safe_url", "")
+        if outcome.ok:
+            pool.mark_ok(endpoint)
+            return outcome
+        last = outcome
+        if classify_text(outcome.error) != "transient":
+            return outcome
+        pool.penalise(endpoint)
+
+    return last if last is not None else Outcome(tx_hash, FAILED, 0, "no endpoints configured")
+
+
+def _grow(value: int, percent: float, *, cap: int) -> int:
+    """Raise an integer fee by at least one unit, never past `cap`."""
+    grown = int(value * (1 + percent / 100.0))
+    if grown <= value:
+        grown = value + 1
+    return min(grown, cap) if cap > value else grown
+
+
+def fee_bump(
+    tx: Mapping[str, Any],
+    *,
+    percent: float = 12.5,
+    floor_percent: float = 10.0,
+    max_multiplier: float = 2.0,
+    base_fee_wei: int | None = None,
+) -> dict:
+    """A copy of `tx` with its fee raised, so a node will accept it as a replacement.
+
+    Pure arithmetic on a transaction dict: no key, no network. Replacement rules
+    differ between nodes, so this aims at the strictest common denominator -- a
+    visible percentage bump, plus enough max fee to clear the current base fee.
+
+    Everything that decides *what* the transaction does is copied unchanged:
+    nonce, to, value, data, gas, chainId. A bump is only ever a fee change; a
+    replacement that also moved value would be a different payment.
+    """
+    if "nonce" not in tx:
+        raise ValueError("fee_bump needs a transaction with a nonce")
+    percent = max(percent, floor_percent)
+    bumped: dict = dict(tx)
+
+    if tx.get("maxFeePerGas") is not None and tx.get("maxPriorityFeePerGas") is not None:
+        tip0 = int(tx["maxPriorityFeePerGas"])
+        fee0 = int(tx["maxFeePerGas"])
+        tip = _grow(tip0, percent, cap=int(tip0 * max_multiplier))
+        fee = _grow(fee0, percent, cap=int(fee0 * max_multiplier))
+        if base_fee_wei is not None:
+            required = 2 * int(base_fee_wei) + tip
+            if fee < required:
+                fee = required
+        bumped["maxPriorityFeePerGas"] = tip
+        bumped["maxFeePerGas"] = max(fee, tip)
+        return bumped
+
+    if tx.get("gasPrice") is not None:
+        price0 = int(tx["gasPrice"])
+        price = _grow(price0, percent, cap=int(price0 * max_multiplier))
+        if base_fee_wei is not None:
+            price = max(price, 2 * int(base_fee_wei))
+        bumped["gasPrice"] = price
+        return bumped
+
+    raise ValueError("transaction has no maxFeePerGas or gasPrice to raise")
+
+
+def replace_stuck(
+    w3,
+    tx: Mapping[str, Any],
+    *,
+    signer: Any,
+    pool=None,
+    connect: Any = None,
+    signed_hash: str | None = None,
+    base_fee_wei: int | None = None,
+    bumps: int = 2,
+    percent: float = 12.5,
+    journal: Journal | None = None,
+    throttle: Throttle | None = None,
+    attempts: int = 3,
+    sleep: Any = time.sleep,
+) -> tuple[Outcome, dict, list[dict]]:
+    """Push a stuck transaction through by re-signing it, same nonce, higher fee.
+
+    `signer(tx_dict)` is supplied by the CALLER and is the only thing that can
+    produce a signature. This module still cannot sign, so the re-signed bytes
+    differ from the original in exactly one respect: the fee the caller chose.
+
+    Returns (outcome, final_tx, history). Every attempt keeps the nonce, to,
+    value and data of the original, so at most one of them can ever land.
+    """
+    history: list[dict] = []
+    current = dict(tx)
+
+    if signed_hash:
+        try:
+            receipt = w3.eth.get_transaction_receipt(signed_hash)
+        except Exception:  # noqa: BLE001 - a missing receipt is the normal path
+            receipt = None
+        if receipt is not None:
+            return (Outcome(signed_hash, ALREADY_KNOWN, 0, "already mined"), current, history)
+
+    outcome = Outcome("", FAILED, 0, "no bump attempted")
+    for bump in range(1, max(1, bumps) + 1):
+        current = fee_bump(current, percent=percent, base_fee_wei=base_fee_wei)
+        signed = signer(current)
+        raw = as_raw_bytes(signed)
+        digest = tx_hash_of(raw)
+        if pool is not None:
+            if connect is None:
+                raise ValueError("replace_stuck needs connect= when given a pool")
+            outcome = broadcast_across(pool, raw, connect=connect, tx_hash=digest,
+                                       journal=journal, throttle=throttle,
+                                       attempts=attempts, sleep=sleep)
+        else:
+            outcome = broadcast(w3, raw, tx_hash=digest, journal=journal,
+                                throttle=throttle, attempts=attempts, sleep=sleep)
+        history.append({
+            "bump": bump,
+            "tx_hash": digest,
+            "nonce": current.get("nonce"),
+            "fee_wei": int(current.get("maxFeePerGas", current.get("gasPrice", 0))),
+            "status": outcome.status,
+        })
+        if outcome.ok:
+            return outcome, current, history
+        if outcome.status != UNDERPRICED:
+            return outcome, current, history
+
+    return outcome, current, history
 
 
 if __name__ == "__main__":

@@ -1,0 +1,10 @@
+# Real database credentials for the deployed copy. Written on the host (or
+# uploaded separately); never committed, never printed by the status page.
+config.local.php
+
+# Key that lets cjd_store.php write to the database. Generated on the host (or
+# uploaded separately); with no such file the import route disables itself.
+import.key
+
+# The text file cjd_store.php reads. It is uploaded as content, not source.
+cjd.php

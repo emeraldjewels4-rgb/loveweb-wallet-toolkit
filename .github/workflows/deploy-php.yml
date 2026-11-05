@@ -1,0 +1,142 @@
+name: deploy php
+
+# Publishes php/ to the live host when it changes on main.
+#
+# Separate from tests.yml on purpose: the test workflow must stay able to run on
+# a fork with no secrets, and a deploy must never be a step that a pull request
+# can reach. Only a push to main (or a manual dispatch) deploys.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   FTP_SERVER    ftp.fiatgod.x10.mx
+#   FTP_USERNAME  an FTP account scoped to public_html/toolkit
+#   FTP_PASSWORD  that account's password
+#
+# The uploaded directory is php/, which contains no key and no signer: the
+# signing tools stay on a machine you control.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "php/**"
+      - ".github/workflows/deploy-php.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-php
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: upload php/ and verify it serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Refuse to deploy a broken file
+        run: |
+          set -euo pipefail
+          if ! command -v php >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq php-cli
+          fi
+          php -v | head -1
+          for file in php/*.php; do
+            php -l "$file"
+          done
+
+      - name: Publish php/ over FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          # The FTP account is chrooted to public_html/toolkit, so the remote
+          # directory is root. The main site's index.html is not in this tree and
+          # is never touched by this job.
+          server-dir: ./
+          local-dir: ./php/
+          # .htaccess must be uploaded, and is not hidden by the action's rules,
+          # but state it explicitly so a future default cannot drop it.
+          exclude: |
+            **/.DS_Store
+            **/README.md
+            # Real database credentials. Never in the repository, so never in a
+            # checkout -- excluded explicitly so a local copy cannot slip in.
+            **/config.local.php
+            # Content, not source: the text file cjd_store.php copies into the
+            # database, and the key that route needs. Both are gitignored, so a
+            # checkout never has them -- named here so the sync never treats them
+            # as extraneous and the route keeps working across a deploy.
+            **/cjd.php
+            **/import.key
+
+      # A successful upload is not a working site. This is the check that would
+      # have caught /toolkit/ serving the SPA's catch-all instead of index.php.
+      - name: Verify the live endpoints
+        run: |
+          set -euo pipefail
+          base="https://fiatgod.x10.mx/toolkit"
+          wait_for() {
+            local url="$1" want="$2" tries=0
+            until body="$(curl -fsS -m 20 "$url")"; do
+              tries=$((tries + 1))
+              if [ "$tries" -ge 12 ]; then
+                echo "::error::$url did not answer after $tries attempts"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "$body" | grep -q "$want" || {
+              echo "::error::$url answered, but without $want"
+              echo "$body" | head -c 400
+              return 1
+            }
+            echo "ok: $url contains $want"
+          }
+          wait_for "$base/preview.php?network=amoy" '"chain_id": 80002'
+          wait_for "$base/preview.php?network=polygon" '"chain_id": 137'
+          wait_for "$base/" "Toolkit preview"
+
+          # The database is optional, so this passes when there is none -- but a
+          # database that is configured and cannot be reached is a real failure
+          # that no other check here would catch, since the pages still render.
+          python3 - "$base" <<'PY'
+          import json, sys, urllib.request
+
+          base = sys.argv[1]
+          payload = json.loads(urllib.request.urlopen(base + "/preview.php?network=amoy", timeout=20).read())
+          primary = payload.get("database") or {}
+          others = payload.get("databases") or {}
+
+          if not primary.get("configured"):
+              print("ok: no database configured, file journal only")
+              raise SystemExit(0)
+
+          if not primary.get("connected"):
+              raise SystemExit("::error::database is configured but not connected")
+          if primary.get("on") != 1:
+              raise SystemExit("::error::database reports connected but on=%r" % primary.get("on"))
+          if not primary.get("table"):
+              raise SystemExit("::error::database connected but its journal table is not ready")
+          print("ok: primary database on (01), journal table ready")
+
+          # Every registered neighbour must be reachable too. A database that is
+          # listed but unreachable means a stale config, and the pages still
+          # render, so nothing else here would notice.
+          bad = [name for name, info in others.items() if not info.get("connected") or info.get("on") != 1]
+          if bad:
+              raise SystemExit("::error::not on (01): " + ", ".join(sorted(bad)))
+          print("ok: all %d configured database(s) on (01)" % len(others))
+          PY
+          # Error handling must be JSON 400, not a PHP notice on the page.
+          code="$(curl -s -o /dev/null -w '%{http_code}' "$base/preview.php?network=nope")"
+          [ "$code" = "400" ] || { echo "::error::unknown network returned $code, expected 400"; exit 1; }
+          echo "ok: unknown network returns 400"

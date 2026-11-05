@@ -41,6 +41,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_gen_wallets.py", "derivation vectors, encryption, file guards"),
     ("test_export_holders.py", "fake JSON-RPC chain"),
     ("test_seed_pool.py", "mock QuickSwap router on a local chain"),
+    ("test_update_toolkit.py", "fake git runner, no repository or network"),
     ("test_broadcast.py", "in-memory EVM, simulated endpoint failures"),
     ("test_distribute.py", "real signed transactions on a local chain"),
     ("test_distribute_token.py", "real ERC-20 transfers on a local chain"),
