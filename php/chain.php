@@ -164,6 +164,39 @@ $shown = 0;
     </td></tr>
   </table>
 
+  <?php if ($bound['connected']): ?>
+    <h2>What <?php echo h((string) $bound['label']); ?> actually grants</h2>
+    <p class="lead" style="margin:.25rem 0 .75rem;">
+      Read on this request: the tables the binding can see, and the privileges
+      <code>SHOW GRANTS</code> returns for this user. A row count is
+      <code>information_schema</code>'s estimate, not a scan of somebody else's data.
+    </p>
+    <table>
+      <tr><th style="width:auto">Table</th><th style="width:auto">Rows (estimate)</th></tr>
+      <?php foreach ($bound['table_list'] as $table): ?>
+        <tr>
+          <td><code><?php echo h((string) $table['name']); ?></code></td>
+          <td><?php echo (int) $table['rows_estimate']; ?></td>
+        </tr>
+      <?php endforeach; ?>
+      <?php if (!$bound['table_list']): ?>
+        <tr><td colspan="2" style="color:#94a3b8">
+          No tables are visible to this grant &mdash; connected, but nothing readable.
+        </td></tr>
+      <?php endif; ?>
+    </table>
+    <table>
+      <tr><th style="width:auto">Privilege</th></tr>
+      <?php foreach ($bound['grants'] as $grant): ?>
+        <tr><td style="word-break:break-word"><code><?php echo h($grant); ?></code></td></tr>
+      <?php endforeach; ?>
+      <?php if (!$bound['grants']): ?>
+        <tr><td style="color:#94a3b8"><code>SHOW GRANTS</code> returned nothing, so what this
+          binding may do is unknown rather than unrestricted.</td></tr>
+      <?php endif; ?>
+    </table>
+  <?php endif; ?>
+
   <?php if ($gateway['matches'] > 0): ?>
     <h2>The <?php echo h((string) $gateway['name']); ?> gateway</h2>
     <p class="lead" style="margin:.25rem 0 .75rem;">

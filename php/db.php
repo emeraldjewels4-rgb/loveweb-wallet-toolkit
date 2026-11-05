@@ -257,6 +257,52 @@ function db_overview(): array
 }
 
 /**
+ * The privileges this user actually holds, from SHOW GRANTS.
+ *
+ * A grant is the only evidence of what the binding may do; anything else is an
+ * inference from having connected. MariaDB prints a database name with its
+ * underscores escaped (`fiatgodx\_lovewebconnection`), so the targets are
+ * normalised exactly as `db_sync.php?action=report` does it -- without that, every
+ * line parses and then fails to match the database it names.
+ *
+ * These lines never carry a password, so they are safe to print.
+ *
+ * @return array<int,string> normalised GRANT statements, capped at 20
+ */
+function db_grants(string $label): array
+{
+    $link = db_named($label);
+    if ($link === null) {
+        return array();
+    }
+
+    try {
+        $result = mysqli_query($link, 'SHOW GRANTS');
+        if ($result === false) {
+            return array();
+        }
+    } catch (Throwable $exc) {
+        // Reachable but not able to say why: an empty list is the honest answer.
+        return array();
+    }
+
+    $grants = array();
+    while ($row = mysqli_fetch_row($result)) {
+        $line = trim((string) $row[0]);
+        if ($line === '') {
+            continue;
+        }
+        $grants[] = str_replace(array(chr(92), '`'), '', $line);
+        if (count($grants) >= 20) {
+            break;
+        }
+    }
+    mysqli_free_result($result);
+
+    return $grants;
+}
+
+/**
  * Domain -> database, from config.local.php `domains`.
  *
  * cPanel has no "attach a database to a domain" switch: a database is bound to a
@@ -747,18 +793,33 @@ function chain_status(): array
         'source' => 'defaults',
         'updated_at' => null,
         'storage' => array('table' => 'chain_connections', 'database' => null),
-        'bound' => array('label' => CHAIN_LABEL, 'on' => 0, 'connected' => false, 'tables' => 0),
+        'bound' => array(
+            'label' => CHAIN_LABEL,
+            'on' => 0,
+            'connected' => false,
+            'tables' => 0,
+            'table_list' => array(),
+            'detail' => 'not reachable',
+            'grants' => array(),
+        ),
         'gateway' => chain_gateway(),
         'domains' => array(),
     );
 
     $overview = db_overview();
     if (isset($overview[CHAIN_LABEL])) {
+        // The count alone could not answer the question the page was asked: a
+        // binding that connected and can see nothing reads the same as one with
+        // four tables. Carry the tables themselves and the grant lines through, so
+        // "connected" is accompanied by what it can actually read and do.
         $status['bound'] = array(
             'label' => CHAIN_LABEL,
             'on' => (int) $overview[CHAIN_LABEL]['on'],
             'connected' => (bool) $overview[CHAIN_LABEL]['connected'],
             'tables' => (int) $overview[CHAIN_LABEL]['table_count'],
+            'table_list' => $overview[CHAIN_LABEL]['tables'],
+            'detail' => (string) $overview[CHAIN_LABEL]['detail'],
+            'grants' => db_grants(CHAIN_LABEL),
         );
     }
 

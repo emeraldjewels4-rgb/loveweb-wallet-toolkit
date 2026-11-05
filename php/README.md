@@ -245,6 +245,8 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 
 - `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, the `web9999` gateway at 34 hosts all on, and `install_gateway.py` managing six. It has no DNS record yet, so it is bound and dark like four of the other five.
 
+- The bound database is shown as evidence rather than a count: the tables it can see with `information_schema` row estimates, and the `GRANT` lines `SHOW GRANTS` returns for this user, normalised the same way `?action=report` does it. A binding that connected but can read nothing now says so instead of looking the same as one with tables. `?format=json` carries both lists as `bound.table_list` and `bound.grants`.
+
 ## Deployed
 
 Live on x10hosting's Infinity plan (server `s22.infinitysrv.com`), account `fiatgodx`, home `/home/fiatgodx`:
