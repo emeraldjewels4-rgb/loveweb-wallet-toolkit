@@ -1,0 +1,39 @@
+name: toolkit-watch
+
+# Warns when the deployed toolkit stops serving real pages. A failed scheduled
+# run emails the repository owner by default; if SLACK_WEBHOOK_URL exists as a
+# repository secret, check_live.py also posts a one-line message to Slack.
+on:
+  schedule:
+    # Every 15 minutes. GitHub runs scheduled jobs late under load; the point is a
+    # prompt warning, not a precise interval.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolkit-watch
+  cancel-in-progress: false
+
+jobs:
+  reachable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The self-test runs first: it proves the checks still catch a page replaced
+      # by the parent site before a real failure is blamed on the host.
+      - name: Prove the checks catch what they claim
+        run: python check_live.py --self-test
+
+      - name: Check the deployed toolkit
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python check_live.py

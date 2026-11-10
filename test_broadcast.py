@@ -269,6 +269,155 @@ def main() -> int:
     check(b.tx_hash_of(raw) == Web3.to_hex(first.hash),
           "keccak of the raw bytes is the transaction hash")
 
+    print("\n=== 12. endpoints: your paid key first, the public RPC last, keys redacted ===")
+    import rpc_endpoints as ep
+
+    check(ep.redact_url("https://polygon-mainnet.g.alchemy.com/v2/" + "a" * 32)
+          == "https://polygon-mainnet.g.alchemy.com/v2/***",
+          "an API key in the path is redacted")
+    check(ep.redact_url("https://user:secret@rpc.example.com/x") == "https://***@rpc.example.com/x",
+          "credentials in the authority are redacted")
+    check(ep.redact_url("https://polygon-bor-rpc.publicnode.com")
+          == "https://polygon-bor-rpc.publicnode.com",
+          "a keyless public URL is left alone")
+
+    env = {"ALCHEMY_API_KEY": "k" * 32,
+           "POLYGON_RPC_URLS": "https://own.example/a,https://own.example/b"}
+    chosen = ep.endpoints_from_env("polygon", env=env, public_default="https://public.example")
+    check([e.tier for e in chosen] == ["explicit", "explicit", "paid", "public"],
+          f"explicit, paid, then public (got {[e.tier for e in chosen]})")
+    check(chosen[2].safe_url.endswith("/***") and "k" * 32 not in str(chosen[2]),
+          "printing a paid endpoint cannot leak its key")
+    check(ep.endpoints_from_env("polygon", env={}, public_default="https://p")[0].tier == "public",
+          "with no provider keys the public endpoint is the whole pool")
+    check(len(ep.endpoints_from_env("amoy",
+                                    env={"ETH_RPC_URLS": "https://same.example/,https://same.example"},
+                                    public_default="https://same.example")) == 1,
+          "one URL given three ways is listed once")
+
+    pool_clock = FakeClock()
+    pool = ep.EndpointPool([ep.Endpoint("https://a.example", "paid", "a"),
+                            ep.Endpoint("https://b.example", "public", "b")],
+                           failures_before_cooldown=2, cooldown_seconds=60,
+                           clock=pool_clock.now)
+    check([e.label for e in pool.order()] == ["a", "b"], "order starts as configured")
+    check(pool.penalise(pool.endpoints[0]) == 0.0, "one failure is not yet a cooldown")
+    check(pool.penalise(pool.endpoints[0]) == 60.0, "the second failure starts a 60s cooldown")
+    check([e.label for e in pool.order()] == ["b", "a"],
+          "a cooling endpoint drops to the back, not out of the pool")
+    pool_clock.now_value += 61
+    check([e.label for e in pool.order()] == ["a", "b"], "and returns to the front when it expires")
+    pool.mark_ok(pool.endpoints[0])
+    check(pool.state()[0]["failures"] == 0, "a success clears the failure count")
+
+    print("\n=== 13. rotation resends one signature; a rejection is not shopped around ===")
+    check(b.classify(ValueError("replacement transaction underpriced")) == b.UNDERPRICED,
+          "an underpriced replacement is its own kind")
+    check(b.classify(ValueError("insufficient funds for gas")) == "fatal",
+          "and stays distinct from fatal")
+
+    def flaky(message: str):
+        class _Fake:
+            def __init__(self) -> None:
+                self.eth = self
+
+            def send_raw_transaction(self, raw):
+                raise ValueError(message)
+
+        return _Fake()
+
+    two = ep.EndpointPool([ep.Endpoint("https://dead.example", "paid", "dead"),
+                           ep.Endpoint("https://live.example", "public", "live")],
+                          failures_before_cooldown=1, clock=pool_clock.now)
+    connected: list[str] = []
+
+    def connect(endpoint):
+        connected.append(endpoint.label)
+        return flaky("503 Service Unavailable") if endpoint.label == "dead" else w3
+
+    moved_before = w3.eth.get_balance(DEST2)
+    rotation = b.broadcast_across(two, sign(w3, next_nonce(w3), to=DEST2), connect=connect,
+                                  attempts=2, base_delay=0, sleep=no_sleep)
+    check(rotation.status == b.SENT, f"the second endpoint carried it ({rotation.status})")
+    check(connected == ["dead", "live"], f"the paid endpoint was tried first ({connected})")
+    check(rotation.endpoint == "https://live.example",
+          "the outcome names the endpoint that worked")
+    check(w3.eth.get_balance(DEST2) - moved_before == VALUE, "and exactly one payment landed")
+    check(two.state()[0]["cooling"], "the failing endpoint is cooling down")
+    check(not two.state()[1]["cooling"], "the healthy one is not")
+
+    rejected = ep.EndpointPool([ep.Endpoint("https://a.example", "paid", "a"),
+                                ep.Endpoint("https://b.example", "public", "b")],
+                               clock=pool_clock.now)
+    tried: list[str] = []
+
+    def connect_reject(endpoint):
+        tried.append(endpoint.label)
+        return flaky("insufficient funds for gas * price + value") if endpoint.label == "a" else w3
+
+    fatal = b.broadcast_across(rejected, sign(w3, next_nonce(w3), to=DEST3),
+                               connect=connect_reject, attempts=1, sleep=no_sleep)
+    check(fatal.status == b.FAILED, "a rejection stays a rejection")
+    check(tried == ["a"], f"and it is not re-tried on every endpoint ({tried})")
+
+    print("\n=== 14. a stuck transaction is replaced: same nonce, higher fee only ===")
+    legacy = {"nonce": 7, "to": DEST, "value": VALUE, "gas": 21_000,
+              "gasPrice": 30_000_000_000, "chainId": 80002}
+    bumped = b.fee_bump(legacy)
+    check(bumped["gasPrice"] == 33_750_000_000, f"a 12.5% bump (got {bumped['gasPrice']})")
+    check(all(bumped[k] == legacy[k] for k in ("nonce", "to", "value", "gas", "chainId")),
+          "the bump changes the fee and nothing else")
+    check(b.fee_bump(legacy, percent=1)["gasPrice"] == 33_000_000_000,
+          "the 10% floor wins over a smaller request")
+    check(b.fee_bump({"nonce": 1, "gasPrice": 100}, percent=200)["gasPrice"] == 200,
+          "growth stops at max_multiplier")
+    check(b.fee_bump({"nonce": 1, "gasPrice": 0})["gasPrice"] == 1,
+          "a zero fee still moves by one unit")
+
+    eip = {"nonce": 3, "maxFeePerGas": 30_000_000_000, "maxPriorityFeePerGas": 30_000_000_000}
+    raised = b.fee_bump(eip, base_fee_wei=40_000_000_000)
+    check(raised["maxFeePerGas"] >= 2 * 40_000_000_000 + raised["maxPriorityFeePerGas"],
+          "a replacement always covers twice the current base fee")
+    check(raised["maxFeePerGas"] >= raised["maxPriorityFeePerGas"], "tip never exceeds max fee")
+
+    for bad, why in (({"gasPrice": 1}, "no nonce"), ({"nonce": 1}, "no fee field")):
+        try:
+            b.fee_bump(bad)
+        except ValueError:
+            check(True, f"fee_bump refuses a transaction with {why}")
+        else:
+            check(False, f"fee_bump refuses a transaction with {why}")
+
+    signer_calls: list[dict] = []
+
+    def signer(tx_dict):
+        signer_calls.append(dict(tx_dict))
+        tx = dict(tx_dict)
+        tx["from"] = SOURCE
+        tx["chainId"] = w3.eth.chain_id
+        return Account.from_key(SOURCE_KEY).sign_transaction(tx)
+
+    base = {"to": DEST3, "value": VALUE, "gas": 21_000, "nonce": next_nonce(w3),
+            "gasPrice": w3.eth.gas_price, "chainId": w3.eth.chain_id}
+    paid_before = w3.eth.get_balance(DEST3)
+    w3.eth.send_raw_transaction = failing_sender(
+        real_send, ["replacement transaction underpriced"] * 2)
+    try:
+        replaced, final_tx, history = b.replace_stuck(w3, base, signer=signer, bumps=3,
+                                                     attempts=1, sleep=no_sleep)
+    finally:
+        w3.eth.send_raw_transaction = real_send
+    check(replaced.ok, f"the third attempt landed ({replaced.status})")
+    check(len(signer_calls) == 3, f"the caller's signer ran once per bump (ran {len(signer_calls)})")
+    check(all(call["nonce"] == base["nonce"] for call in signer_calls),
+          "every replacement kept the original nonce")
+    fees = [row["fee_wei"] for row in history]
+    check(fees == sorted(fees) and len(set(fees)) == 3, f"each bump raised the fee ({fees})")
+    check(final_tx["nonce"] == base["nonce"] and final_tx["to"] == base["to"],
+          "the final transaction still pays the same person")
+    check(w3.eth.get_balance(DEST3) - paid_before == VALUE,
+          "and only one payment landed, not one per bump")
+
     print("\n" + "=" * 60)
     if FAILED:
         print(f"{len(FAILED)} CHECK(S) FAILED:")
