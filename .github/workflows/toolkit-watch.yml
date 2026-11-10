@@ -5,9 +5,9 @@ name: toolkit-watch
 # repository secret, check_live.py also posts a one-line message to Slack.
 on:
   schedule:
-    # Every 15 minutes. GitHub runs scheduled jobs late under load; the point is a
+    # Every hour. GitHub runs scheduled jobs late under load; the point is a
     # prompt warning, not a precise interval.
-    - cron: "*/15 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 permissions:
