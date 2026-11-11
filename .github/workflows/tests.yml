@@ -99,17 +99,19 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # Build a wheel, then install that wheel -- not the git URL. A direct
-          # URL install freezes as 'coincurve @ git+https://...', which the pin
-          # check below cannot read as an ==pin and would fail on. A wheel
-          # installed from a file freezes as coincurve==22.0.0, exactly what
-          # constraints-py3.14.txt pins.
-          python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/coincurve-wheel" \n            "git+https://github.com/ofek/coincurve@${COINCURVE_COMMIT}"
+          # Build a wheel and install that file, not the git URL: a URL install
+          # freezes as 'coincurve @ git+https://...', which the pin check further
+          # down cannot read as an ==pin. A wheel freezes as coincurve==22.0.0.
+          # pip's output is re-emitted as annotations on failure, because job
+          # logs need a scope this workflow's token does not carry.
+          wheel_log="${RUNNER_TEMP}/coincurve-wheel.log"
+          if ! python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/coincurve-wheel" "git+https://github.com/ofek/coincurve@${COINCURVE_COMMIT}" > "$wheel_log" 2>&1; then
+            head -40 "$wheel_log" | sed 's/^/::error::/'
+            exit 1
+          fi
           python -m pip install --no-deps "${RUNNER_TEMP}"/coincurve-wheel/coincurve-*.whl
           python -c "import importlib.metadata as m; print('coincurve built from upstream:', m.version('coincurve'))"
 
-      # A per-interpreter override (constraints-py3.11.txt) wins if it exists;
-      # otherwise the shared pin set governs this leg.
       - name: Install pinned dependencies
         env:
           PYVER: ${{ matrix.python-version }}
