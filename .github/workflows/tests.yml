@@ -57,16 +57,13 @@ jobs:
           - python-version: "3.12"
           - python-version: "3.13"
           - python-version: "3.14"
-            # Reported, not required yet. Exactly one dependency in this
-            # closure has no cp314 build: coincurve. Every release up to 21.0.0
-            # predates 3.14, and 3.14 support exists only on upstream main
-            # (22.0.0, never published to PyPI), so the leg builds that pinned
-            # commit before resolving. bip-utils requires coincurve on 3.12+,
-            # which is why an installer failure was the whole story before. All
-            # other pinned C extensions publish cp314 wheels. Keep this leg
-            # non-gating until a run has gone green; then flip experimental to
-            # false and add it to the required checks in branch protection.
-            experimental: true
+            # Gating, and green: all four legs passed with every suite run on
+            # 3.14. This is not a required check in branch protection yet --
+            # add 'suites (py 3.14)' there if a 3.14-only regression should
+            # block merges rather than just redden the run. The only pinned
+            # dependency without a cp314 build is coincurve, so the step above
+            # builds the pinned upstream commit (22.0.0, never published to
+            # PyPI) and installs it before the closure is resolved.
 
     steps:
       - name: Check out
