@@ -99,7 +99,13 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install "git+https://github.com/ofek/coincurve@${COINCURVE_COMMIT}"
+          # Build a wheel, then install that wheel -- not the git URL. A direct
+          # URL install freezes as 'coincurve @ git+https://...', which the pin
+          # check below cannot read as an ==pin and would fail on. A wheel
+          # installed from a file freezes as coincurve==22.0.0, exactly what
+          # constraints-py3.14.txt pins.
+          python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/coincurve-wheel" \n            "git+https://github.com/ofek/coincurve@${COINCURVE_COMMIT}"
+          python -m pip install --no-deps "${RUNNER_TEMP}"/coincurve-wheel/coincurve-*.whl
           python -c "import importlib.metadata as m; print('coincurve built from upstream:', m.version('coincurve'))"
 
       # A per-interpreter override (constraints-py3.11.txt) wins if it exists;
