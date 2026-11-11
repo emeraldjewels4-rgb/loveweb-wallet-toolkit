@@ -57,13 +57,13 @@ jobs:
           - python-version: "3.12"
           - python-version: "3.13"
           - python-version: "3.14"
-            # Gating, and green: all four legs passed with every suite run on
-            # 3.14. This is not a required check in branch protection yet --
-            # add 'suites (py 3.14)' there if a 3.14-only regression should
-            # block merges rather than just redden the run. The only pinned
-            # dependency without a cp314 build is coincurve, so the step above
-            # builds the pinned upstream commit (22.0.0, never published to
-            # PyPI) and installs it before the closure is resolved.
+            # Gating and required: all four legs passed with every suite run on
+            # 3.14, and 'suites (py 3.14)' is one of main's required status
+            # checks, so a 3.14-only regression blocks a merge rather than only
+            # reddening the run. The only pinned dependency without a cp314
+            # build is coincurve, so the step above builds the pinned upstream
+            # commit (22.0.0, never published to PyPI) and installs it before
+            # the closure is resolved.
 
     steps:
       - name: Check out
