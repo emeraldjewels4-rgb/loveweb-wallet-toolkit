@@ -23,8 +23,14 @@ Upload
     written to -- the grants are SELECT-only and that is the arrangement to keep.
 
 Verify
-    The remote table's digest (SHA-256 over the sorted row keys) has to equal the
-    digest of what was sent, and preview.php has to publish the same numbers.
+    Every run names itself with a token and the host stamps the rows it writes
+    with it, so the digest over just this run (SHA-256 of the sorted keys) has
+    to equal the digest of what was sent -- exact equality, not a sample.
+
+    Nothing is ever deleted from the table, so a row removed from its source
+    stays behind carrying an older token: the total is reported, not required to
+    match. What is required is that the total never drops below what earlier
+    runs already stored, and that preview.php publishes that same total.
     Anything else exits non-zero, so a scheduled run cannot fail quietly.
 
 The local copy of the merge is .sandbox/db_merged.json (gitignored): it holds the
@@ -38,6 +44,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -175,6 +182,62 @@ def digest(keys):
     return context.hexdigest()
 
 
+def previous_keys():
+    """The keys the last run wrote, read before this one overwrites the snapshot.
+
+    Losing a row from a source is not a fault, so the accumulated table is
+    allowed to be bigger than this export. Being SMALLER than what a previous
+    run stored is a different thing: that is the table having lost rows, and the
+    snapshot is the only local record of what it once held.
+    """
+    try:
+        data = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+
+    return {row.get("key") for row in data.get("merged") or [] if row.get("key")}
+
+
+def verification(scoped, accumulated, local_keys, expected, prev_keys):
+    """Decide whether this run's rows are stored, tolerating older ones.
+
+    Returns (ok, lines). The gate is exact equality against the digest of the
+    rows this run wrote. The accumulated total is checked only for the two
+    mistakes that matter -- fewer rows than were just sent, or fewer than an
+    earlier run had already stored -- because the table is a union over time and
+    demanding it equal one export would fail every run after any source delete.
+    """
+    lines = []
+    rows = scoped.get("rows")
+    got = scoped.get("digest")
+    lines.append("  verify: this run stored %s row(s), digest %s (sent %d, %s)"
+                 % (rows, (got or "")[:16], len(local_keys), expected[:16]))
+    ok = rows == len(local_keys) and got == expected
+
+    if not ok and local_keys and rows == 0:
+        lines.append("  verify: nothing was recorded under this run token, which is what a"
+                     " host still running the older db.php or db_sync.php looks like")
+
+    total = (accumulated or {}).get("rows")
+    if not isinstance(total, int):
+        lines.append("  verify: the table's total was not readable, so accumulation is unchecked")
+        return ok, lines
+
+    lines.append("  verify: table holds %d row(s) in total (%+d against this export; rows"
+                 " removed from a source stay here by design)" % (total, total - len(local_keys)))
+
+    floor = len(set(local_keys) | set(prev_keys))
+    if total < len(local_keys):
+        lines.append("  verify: the table holds fewer rows than were just sent")
+        ok = False
+    elif total < floor:
+        lines.append("  verify: the table lost rows an earlier run had stored (%d expected at least)"
+                     % floor)
+        ok = False
+
+    return ok, lines
+
+
 def payload_rows(merged):
     return [
         {
@@ -232,9 +295,14 @@ def main():
           % (len(merged), seen_rows - len(merged)))
 
     expected = digest(merged)
+    # Read before the snapshot is overwritten: it is the only local record of
+    # what earlier runs had already stored.
+    prev_keys = previous_keys()
+    run = uuid.uuid4().hex
     SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT.write_text(json.dumps({
         "generated_at": export.get("generated_at"),
+        "run": run,
         "cap": cap,
         "databases": sorted({row["source_db"] for row in merged.values()}),
         "rows": len(merged),
@@ -249,7 +317,7 @@ def main():
 
     stored = 0
     for batch in batches(payload_rows(merged)):
-        reply = call(SYNC_URL + "?action=merge", key, {"rows": batch})
+        reply = call(SYNC_URL + "?action=merge", key, {"rows": batch, "run": run})
         stored += int(reply.get("accepted") or 0)
         print("  upload: sent %s, accepted %s, distinct %s"
               % (reply.get("received"), reply.get("accepted"), reply.get("distinct")))
@@ -258,25 +326,26 @@ def main():
         print("  done: %d row(s) uploaded" % stored)
         return
 
-    status = call(SYNC_URL + "?action=status", key).get("merged") or {}
-    remote_rows = status.get("rows")
-    remote_digest = status.get("digest")
-    print("  verify: remote holds %s row(s), %s bytes, digest %s"
-          % (remote_rows, status.get("bytes"), (remote_digest or "")[:16]))
-
-    ok = remote_rows == len(merged) and remote_digest == expected
+    scoped = call("%s?action=status&run=%s" % (SYNC_URL, run), key).get("merged") or {}
+    accumulated = call(SYNC_URL + "?action=status", key).get("merged") or {}
+    ok, lines = verification(scoped, accumulated, set(merged), expected, prev_keys)
+    for line in lines:
+        print(line)
 
     with urllib.request.urlopen(PREVIEW_URL, timeout=120) as response:
         live = (json.load(response) or {}).get("merged") or {}
     print("  verify: preview reports %s row(s), digest %s"
           % (live.get("rows"), (live.get("digest") or "")[:16]))
-    ok = ok and live.get("rows") == len(merged) and live.get("digest") == expected
+    if live.get("rows") != accumulated.get("rows") or live.get("digest") != accumulated.get("digest"):
+        print("  verify: preview disagrees with ?action=status about the same table")
+        ok = False
 
     if not ok:
-        print("  verify: FAILED, expected %d row(s) and digest %s" % (len(merged), expected[:16]))
+        print("  verify: FAILED, expected %d row(s) with digest %s under run %s"
+              % (len(merged), expected[:16], run[:8]))
         sys.exit(1)
 
-    print("  done: %d row(s) merged from %d table(s), digest verified end to end"
+    print("  done: %d row(s) merged from %d table(s), this run verified end to end"
           % (len(merged), tables))
 
 

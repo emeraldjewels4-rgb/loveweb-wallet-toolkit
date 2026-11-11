@@ -489,6 +489,11 @@ function ensure_cjd_table(mysqli $link): void
  *
  * LONGTEXT, for the same reason as cjd_source: one of these rows carries a whole
  * stored file, and a TEXT column stops at 65,535 bytes.
+ *
+ * `run_token` records which upload wrote the row last. Rows are never deleted,
+ * so a row removed from its source stays here for good; the token is what lets a
+ * sync prove "everything I just sent is stored" without also claiming the table
+ * holds nothing else, which it never will again.
  */
 function ensure_merged_table(mysqli $link): void
 {
@@ -504,10 +509,30 @@ function ensure_merged_table(mysqli $link): void
         . ' row_json LONGTEXT NOT NULL,'
         . ' first_seen DATETIME NOT NULL,'
         . ' last_seen DATETIME NOT NULL,'
+        . ' run_token VARCHAR(64) NULL,'
         . ' UNIQUE KEY key_idx (key_sha256),'
-        . ' KEY source_idx (source_db)'
+        . ' KEY source_idx (source_db),'
+        . ' KEY run_idx (run_token)'
         . ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     );
+
+    // A table created before run_token existed keeps the old shape: CREATE TABLE
+    // IF NOT EXISTS has nothing to do on a table that is already there. Ask the
+    // catalogue and add the column once. Failing here is fatal on purpose -- a
+    // merge that cannot mark its own rows cannot be verified afterwards.
+    $present = mysqli_query($link, "SHOW COLUMNS FROM merged_rows LIKE 'run_token'");
+    if ($present === false) {
+        throw new RuntimeException('merged_rows run_token cannot be inspected');
+    }
+    $has_run = mysqli_num_rows($present) > 0;
+    mysqli_free_result($present);
+
+    if (!$has_run && mysqli_query(
+        $link,
+        'ALTER TABLE merged_rows ADD COLUMN run_token VARCHAR(64) NULL, ADD KEY run_idx (run_token)'
+    ) === false) {
+        throw new RuntimeException('merged_rows run_token cannot be added');
+    }
 }
 
 /**
@@ -572,16 +597,18 @@ function cjd_status(): array
  *
  * @return array<string,mixed>
  */
-function merged_status(): array
+function merged_status(?string $run = null): array
 {
     $status = array(
         'table' => 'merged_rows',
         'on' => 0,
+        'run_token' => $run,
         'rows' => 0,
         'bytes' => 0,
         'digest' => null,
         'last_seen' => null,
         'sources' => array(),
+        'totals' => array('rows' => 0, 'bytes' => 0),
     );
 
     $link = db();
@@ -592,10 +619,20 @@ function merged_status(): array
     try {
         ensure_merged_table($link);
 
+        // One optional filter, so the same function answers two different
+        // questions: "what did that upload store" when a run is named, and "what
+        // does the table hold in total" when it is not. Escaped rather than
+        // bound: the value is a hex token and a single condition does not need a
+        // prepared statement.
+        $filter = '';
+        if ($run !== null) {
+            $filter = " WHERE run_token = '" . mysqli_real_escape_string($link, $run) . "'";
+        }
+
         $result = mysqli_query(
             $link,
             'SELECT COUNT(*) AS rows_total, COALESCE(SUM(row_bytes), 0) AS bytes_total,'
-            . ' MAX(last_seen) AS last_seen FROM merged_rows'
+            . ' MAX(last_seen) AS last_seen FROM merged_rows' . $filter
         );
         if ($result !== false) {
             $row = mysqli_fetch_assoc($result);
@@ -610,7 +647,7 @@ function merged_status(): array
         // Keys only: 64 bytes per row instead of a whole row, and the digest
         // proves which rows, not merely how many.
         $context = hash_init('sha256');
-        $result = mysqli_query($link, 'SELECT key_sha256 FROM merged_rows ORDER BY key_sha256');
+        $result = mysqli_query($link, 'SELECT key_sha256 FROM merged_rows' . $filter . ' ORDER BY key_sha256');
         if ($result !== false) {
             while ($row = mysqli_fetch_row($result)) {
                 hash_update($context, (string) $row[0]);
@@ -623,6 +660,7 @@ function merged_status(): array
         $result = mysqli_query(
             $link,
             'SELECT source_db, source_table, COUNT(*) AS rows_total FROM merged_rows'
+            . $filter
             . ' GROUP BY source_db, source_table ORDER BY source_db, source_table'
         );
         if ($result !== false) {
@@ -631,6 +669,24 @@ function merged_status(): array
                     'database' => (string) $row['source_db'],
                     'table' => (string) $row['source_table'],
                     'rows' => (int) $row['rows_total'],
+                );
+            }
+            mysqli_free_result($result);
+        }
+
+        // The total is always unfiltered, even when the figures above are one
+        // run's: the caller needs both to tell "stored exactly what I sent" from
+        // "the table still holds what earlier runs put there".
+        $result = mysqli_query(
+            $link,
+            'SELECT COUNT(*) AS rows_total, COALESCE(SUM(row_bytes), 0) AS bytes_total FROM merged_rows'
+        );
+        if ($result !== false) {
+            $row = mysqli_fetch_assoc($result);
+            if (is_array($row)) {
+                $status['totals'] = array(
+                    'rows' => (int) $row['rows_total'],
+                    'bytes' => (int) $row['bytes_total'],
                 );
             }
             mysqli_free_result($result);

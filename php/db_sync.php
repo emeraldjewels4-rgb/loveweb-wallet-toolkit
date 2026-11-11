@@ -7,7 +7,7 @@ declare(strict_types=1);
  *
  *   GET  db_sync.php?action=export&limit=20000   (read)   every table, every database
  *   POST db_sync.php?action=merge                (write)  rows -> merged_rows
- *   GET  db_sync.php?action=status               (read)   what the merged table holds
+ *   GET  db_sync.php?action=status[&run=token]   (read)   the table, or one upload
  *   GET  db_sync.php?action=report               (read)   what each database is running on
  *
  * Why a route at all: there is no shell and no remote MySQL on this account, so
@@ -252,9 +252,12 @@ function export_all(int $cap): array
  * a reason that is not visible from outside.
  *
  * @param array<int,mixed> $rows
+ * @param string|null $run token naming this upload; stamped on every row it
+ *                          writes, so the caller can prove "what I sent is
+ *                          stored" without the table ever having to shrink
  * @return array<string,mixed>
  */
-function merge_rows(array $rows): array
+function merge_rows(array $rows, ?string $run = null): array
 {
     $link = db();
     if ($link === null) {
@@ -275,13 +278,14 @@ function merge_rows(array $rows): array
         $statement = mysqli_prepare(
             $link,
             'INSERT INTO merged_rows'
-            . ' (key_sha256, source_table, source_db, seen_in, row_bytes, row_json, first_seen, last_seen)'
-            . ' VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+            .            ' (key_sha256, source_table, source_db, seen_in, row_bytes, row_json, first_seen, last_seen, run_token)'
+            . ' VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?)'
             . ' ON DUPLICATE KEY UPDATE'
             . ' seen_in = GREATEST(seen_in, VALUES(seen_in)),'
             . ' row_bytes = VALUES(row_bytes),'
             . ' row_json = VALUES(row_json),'
             . ' source_db = VALUES(source_db),'
+            . ' run_token = VALUES(run_token),'
             . ' last_seen = UTC_TIMESTAMP()'
         );
 
@@ -315,7 +319,7 @@ function merge_rows(array $rows): array
             $seen = isset($row['seen']) ? max(1, min(1000, (int) $row['seen'])) : 1;
             $bytes = strlen($json);
 
-            mysqli_stmt_bind_param($statement, 'sssiis', $key, $table, $database, $seen, $bytes, $json);
+            mysqli_stmt_bind_param($statement, 'sssiiss', $key, $table, $database, $seen, $bytes, $json, $run);
             mysqli_stmt_execute($statement);
 
             $accepted++;
@@ -337,7 +341,8 @@ function merge_rows(array $rows): array
         'accepted' => $accepted,
         'distinct' => count($keys),
         'on' => 1,
-        'merged' => merged_status(),
+        'run_token' => $run,
+        'merged' => merged_status($run),
     );
 }
 
@@ -602,7 +607,12 @@ if (!hash_equals($key, $given)) {
 $action = isset($_GET['action']) ? strtolower((string) $_GET['action']) : 'export';
 
 if ($action === 'status') {
-    echo json_encode(array('action' => 'status', 'merged' => merged_status()), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $run = isset($_GET['run']) ? (string) $_GET['run'] : null;
+    if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
+        refuse(400, 'run token is not a plain token');
+    }
+
+    echo json_encode(array('action' => 'status', 'merged' => merged_status($run)), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
     exit;
 }
 
@@ -640,7 +650,12 @@ if ($action === 'merge') {
         refuse(413, 'too many rows for one request: split the batch');
     }
 
-    echo json_encode(merge_rows($payload['rows']), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $run = isset($payload['run']) ? (string) $payload['run'] : null;
+    if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
+        refuse(400, 'run token is not a plain token');
+    }
+
+    echo json_encode(merge_rows($payload['rows'], $run), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
     exit;
 }
 
