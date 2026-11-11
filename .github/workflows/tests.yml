@@ -57,17 +57,13 @@ jobs:
           - python-version: "3.12"
           - python-version: "3.13"
           - python-version: "3.14"
-            # Reported, not required. Probed on 2026-11-04 with
-            #   pip download --no-deps --only-binary=:all: --python-version 3.14
-            # and the blocker is exactly one dependency: coincurve has no cp314
-            # wheel at 21.0.0 through 25.0.0. web3, eth-account, ckzg, eth-tester
-            # and py-evm all publish cp314 wheels. A full closure resolution for
-            # cp314 therefore ends in ResolutionImpossible, so this leg fails at
-            # INSTALL, not at a test -- a wheel problem, not a portability
-            # finding. It runs so the day upstream publishes is visible, and it
-            # does not gate merges while that is true. Flip this to false (and
-            # add it to the required checks) once the leg is green.
-            experimental: true
+            # Gating, and green: all four legs passed with every suite run on
+            # 3.14. This is not a required check in branch protection yet --
+            # add 'suites (py 3.14)' there if a 3.14-only regression should
+            # block merges rather than just redden the run. The only pinned
+            # dependency without a cp314 build is coincurve, so the step above
+            # builds the pinned upstream commit (22.0.0, never published to
+            # PyPI) and installs it before the closure is resolved.
 
     steps:
       - name: Check out
@@ -86,8 +82,35 @@ jobs:
             constraints.txt
             constraints-py*.txt
 
-      # A per-interpreter override (constraints-py3.11.txt) wins if it exists;
-      # otherwise the shared pin set governs this leg.
+      # No coincurve release publishes a cp314 wheel -- 21.0.0 is the newest, and
+      # 3.14 support only landed on upstream main (as 22.0.0, never published).
+      # bip-utils requires coincurve on 3.12+, so without this step the 3.14 leg
+      # cannot resolve its closure at all and dies in INSTALL before a single
+      # test runs. Building the pinned upstream commit here installs a
+      # distribution that is still named coincurve, so bip-utils' requirement is
+      # satisfied; constraints-py3.14.txt pins the version it reports.
+      - name: Build coincurve for 3.14 from upstream
+        if: matrix.python-version == '3.14'
+        env:
+          COINCURVE_COMMIT: 872388b6add9851a3057a1914df9fe87ee4a9f65
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          # Build a wheel, then install it BY NAME from that directory. Both a
+          # git URL and a wheel path freeze as 'coincurve @ <url>', which the pin
+          # check below cannot read as an ==pin. A name resolved out of a
+          # --find-links directory freezes as coincurve==22.0.0, which is exactly
+          # what constraints-py3.14.txt pins.
+          # pip's output is re-emitted as annotations on failure, because job
+          # logs need a scope this workflow's token does not carry.
+          wheel_log="${RUNNER_TEMP}/coincurve-wheel.log"
+          if ! python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/coincurve-wheel" "git+https://github.com/ofek/coincurve@${COINCURVE_COMMIT}" > "$wheel_log" 2>&1; then
+            head -40 "$wheel_log" | sed 's/^/::error::/'
+            exit 1
+          fi
+          python -m pip install --no-deps --no-index --find-links "${RUNNER_TEMP}/coincurve-wheel" "coincurve==22.0.0"
+          python -c "import importlib.metadata as m; print('coincurve built from upstream:', m.version('coincurve'))"
+
       - name: Install pinned dependencies
         env:
           PYVER: ${{ matrix.python-version }}
