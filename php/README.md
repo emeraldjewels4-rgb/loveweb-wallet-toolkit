@@ -106,7 +106,7 @@ The account has four databases, so `config.local.php` names them all: `name` is 
 |---|---|
 | `GET ?action=export&limit=N` | Every table of every configured database, rows as JSON. Caps at N rows per table (default 20,000) and marks the table `truncated` when the cap bit. |
 | `POST ?action=merge` | `{"rows": [...]}` into `merged_rows` in the primary database. Every row's key is recomputed here and a row filed under a key that does not describe it is refused. |
-| `GET ?action=status` | Row count, bytes, digest and per-source-table counts of `merged_rows`. |
+| `GET ?action=status[&run=TOKEN]` | Row count, bytes, digest and per-source-table counts of `merged_rows` -- for one upload's rows when `run` is given, for the whole table when it is not. `totals` always covers the whole table. |
 | `GET ?action=report` | Read-only survey of every database: server version and defaults, each table's engine and collation, the privileges `SHOW GRANTS` reports, TLS, and the limits that bite (packet size, `sql_mode`, `wait_timeout`). |
 
 `sync_database.py` (repository root) drives all three:
@@ -120,7 +120,9 @@ A row's identity is SHA-256 over its table name and its values, computed on the 
 
 Nothing is deleted and no neighbour is written to: the rows are copied into `merged_rows` in the primary database, and only ever there. That makes the merge repeatable -- the second run upserts the same keys and updates `last_seen` instead of inserting copies.
 
-`merged_status()` publishes the table's digest (SHA-256 over the sorted row keys) in `preview.php` as `merged`. That is what the sync checks: the digest of what it sent has to equal the digest the host reports, and the digest `preview.php` publishes. A row count alone cannot distinguish "the same three rows" from "three other rows"; a digest can, without dragging 65 KB rows back to diff them.
+`merged_status()` publishes the table's digest (SHA-256 over the sorted row keys) in `preview.php` as `merged`. A row count alone cannot distinguish "the same three rows" from "three other rows"; a digest can, without dragging 65 KB rows back to diff them.
+
+Nothing is ever deleted, so the table is a union over time: a row removed from its source stays behind forever. Each upload therefore names itself with a run token, `merge_rows()` stamps every row it writes with it, and the sync compares the digest of *that run's* rows against the digest of what it sent -- exact equality over the rows it wrote, which is a stronger claim than "the table looks about right" and no longer impossible to satisfy after any delete. The accumulated total is reported alongside and checked for the two failures that matter: fewer rows than were just sent, or fewer than any earlier run had already stored. `preview.php` publishes the accumulated digest, so the sync requires it to match `?action=status` rather than one export.
 
 The local copy of the merge lands in `.sandbox/db_merged.json` (gitignored) -- it holds the rows themselves, so treat it like the databases it came from.
 
