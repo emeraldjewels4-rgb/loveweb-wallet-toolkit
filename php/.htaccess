@@ -2,3 +2,30 @@
 # Without this, the parent rewrite sends /toolkit/ to the FiatLord index.html.
 DirectoryIndex index.php
 RewriteEngine Off
+
+# import.key authorises export and merge. It is a plain text file inside the
+# webroot, so without this it would be downloadable and would hand anyone the
+# ability to read every row of all four databases. Rewrites stay off here on
+# purpose: turning them on hands /toolkit/ back to the parent SPA.
+<Files "import.key">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
+
+# config.local.php is executed by PHP rather than served today, but if the
+# handler ever stopped matching, its source -- database credentials -- would
+# be sent to whoever asked. Including it from PHP is unaffected by this.
+<Files "config.local.php">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</Files>
