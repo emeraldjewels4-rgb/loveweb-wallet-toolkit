@@ -573,6 +573,52 @@ function database_report(): array
             'error' => $grantError,
         );
 
+        // What the merge needs before it can add the run_token column: ALTER on
+        // merged_rows, and CREATE if the table is not there yet. Reported here so
+        // a missing grant is named in advance, rather than surfacing as the
+        // merge's generic 503 after every row has been built and sent.
+        if ($label === DB_PRIMARY) {
+            $exists = null;
+            $hasRunToken = null;
+            try {
+                $result = mysqli_query($link, "SHOW TABLES LIKE 'merged_rows'");
+                if ($result !== false) {
+                    $exists = mysqli_num_rows($result) > 0;
+                    mysqli_free_result($result);
+                }
+                if ($exists === true) {
+                    $result = mysqli_query($link, "SHOW COLUMNS FROM merged_rows LIKE 'run_token'");
+                    if ($result !== false) {
+                        $hasRunToken = mysqli_num_rows($result) > 0;
+                        mysqli_free_result($result);
+                    }
+                }
+            } catch (Throwable $exc) {
+                $exists = null;
+                $hasRunToken = null;
+            }
+
+            $onTable = privileges_on($objects, $name, 'merged_rows');
+            $entry['merged_table'] = array(
+                'database' => $name,
+                'table' => 'merged_rows',
+                'exists' => $exists,
+                'has_run_token' => $hasRunToken,
+                'needs_alter' => $exists === true && $hasRunToken === false,
+                'privileges' => array(
+                    'alter' => (bool) $onTable['alter'],
+                    'drop' => (bool) $onTable['drop'],
+                    'create' => (bool) $onTable['create'],
+                    'insert' => (bool) $onTable['insert'],
+                    'select' => (bool) $onTable['select'],
+                ),
+                // Nothing left to do, or permission to do it.
+                'ready' => $exists === null ? null
+                    : ($exists === false ? (bool) $onTable['create']
+                        : ($hasRunToken === true ? true : (bool) $onTable['alter'])),
+            );
+        }
+
         $report['databases'][$label] = $entry;
     }
 

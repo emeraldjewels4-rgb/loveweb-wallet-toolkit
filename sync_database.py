@@ -238,6 +238,55 @@ def verification(scoped, accumulated, local_keys, expected, prev_keys):
     return ok, lines
 
 
+PRIMARY_LABEL = "toolkit"  # DB_PRIMARY in php/db.php
+
+
+def schema_preflight(report):
+    """Say in advance whether the merge can store rows, before any are sent.
+
+    The first merge after a deploy has to add `run_token`, which needs ALTER on
+    merged_rows. Without that grant the merge fails with a generic 503 that says
+    nothing about privileges, and it fails only after every row has been built
+    and posted. ?action=report states what the account actually holds, so the
+    answer is available before the first request that writes.
+
+    Returns (ok, lines)."""
+    lines = []
+    primary = ((report or {}).get("databases") or {}).get(PRIMARY_LABEL) or {}
+    table = primary.get("merged_table") or {}
+    if not table:
+        lines.append("  preflight: the host did not report merged_rows, so ALTER access is "
+                     "unknown and the merge will be the one to find out")
+        return True, lines
+
+    database = table.get("database") or primary.get("database") or PRIMARY_LABEL
+    exists = table.get("exists")
+    has_run = table.get("has_run_token")
+    privs = table.get("privileges") or {}
+    lines.append("  preflight: %s.merged_rows exists=%s run_token=%s | ALTER=%s DROP=%s CREATE=%s"
+                 % (database, exists, has_run, privs.get("alter"), privs.get("drop"),
+                    privs.get("create")))
+
+    if exists is False and not privs.get("create"):
+        lines.append("  preflight: merged_rows does not exist and CREATE is not granted, so it "
+                     "cannot be created. Grant CREATE and INSERT on %s." % database)
+        return False, lines
+
+    if table.get("needs_alter") and not privs.get("alter"):
+        lines.append("  preflight: merged_rows has no run_token column and ALTER is not granted, "
+                     "so the column cannot be added; the merge would fail with a 503 after "
+                     "sending rows")
+        lines.append("  preflight: grant ALTER on %s.merged_rows (cPanel -> MySQL Databases -> "
+                     "privileges), or drop the table so it can be recreated with the column"
+                     % database)
+        return False, lines
+
+    if not privs.get("drop"):
+        lines.append("  preflight: DROP is not granted; that is only needed if the table has to "
+                     "be rebuilt, so the merge can proceed")
+    return True, lines
+
+
 def payload_rows(merged):
     return [
         {
@@ -274,9 +323,21 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="download and merge locally, send nothing")
     parser.add_argument("--no-verify", action="store_true", help="skip the live digest check")
+    parser.add_argument("--skip-preflight", action="store_true",
+                        help="do not ask the host whether ALTER is granted before merging")
     args = parser.parse_args()
 
     key = import_key()
+
+    # Before anything is uploaded or sent: the host is the only party that knows
+    # what the account may do, and a missing ALTER has a name worth printing.
+    if not args.skip_preflight:
+        ok, lines = schema_preflight(call(SYNC_URL + "?action=report", key))
+        for line in lines:
+            print(line)
+        if not ok:
+            print("  preflight: refusing to merge; nothing was uploaded and nothing was sent")
+            sys.exit(1)
 
     if not args.no_upload:
         for name in UPLOADS:

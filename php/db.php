@@ -148,6 +148,47 @@ function db_named(string $label): ?mysqli
     return $links[$label];
 }
 
+/**
+ * Which privileges the account holds on one table, from the GRANT targets it has.
+ *
+ * Pure, so it can be tested without a server: the caller passes the map that
+ * SHOW GRANTS produced, already normalised to `*.*`, `db.*` and `db.table` keys.
+ *
+ * A grant on `db.*` or `*.*` covers the table, which is why all three scopes are
+ * read rather than only the exact one: an account given ALL on the database has
+ * ALTER on the table without any table-level line existing. "ALL PRIVILEGES" as
+ * a word covers every privilege asked for, including ones MySQL adds later.
+ *
+ * @param array<string,array<int,string>> $objects
+ * @param array<int,string> $wanted
+ * @return array<string,bool> lowercased privilege => held, plus 'all'
+ */
+function privileges_on(
+    array $objects,
+    string $database,
+    string $table,
+    array $wanted = array('ALTER', 'DROP', 'CREATE', 'INSERT', 'SELECT', 'UPDATE')
+): array {
+    $scopes = array('*.*', $database . '.*', $database . '.' . $table);
+    $held = array();
+    foreach ($scopes as $scope) {
+        if (!isset($objects[$scope]) || !is_array($objects[$scope])) {
+            continue;
+        }
+        foreach ($objects[$scope] as $privilege) {
+            $held[strtoupper(trim((string) $privilege))] = true;
+        }
+    }
+
+    $all = isset($held['ALL PRIVILEGES']) || isset($held['ALL']);
+    $answer = array('all' => $all);
+    foreach ($wanted as $privilege) {
+        $answer[strtolower($privilege)] = $all || isset($held[strtoupper($privilege)]);
+    }
+
+    return $answer;
+}
+
 /** The primary connection, which is the only one anything writes to. */
 function db(): ?mysqli
 {
