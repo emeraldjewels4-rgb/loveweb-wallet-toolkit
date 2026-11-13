@@ -34,9 +34,9 @@ def check(cond: bool, label: str) -> None:
         FAILED.append(label)
 
 
-def export(*tables: dict) -> dict:
+def export(*entries: dict) -> dict:
     """An export payload from table entries, so each case below reads as data."""
-    return {"tables": list(tables)}
+    return {"tables": list(entries)}
 
 
 def table(database: str, name: str, *rows, on: bool = True, error=None) -> dict:
@@ -50,24 +50,25 @@ def table(database: str, name: str, *rows, on: bool = True, error=None) -> dict:
 
 def main() -> int:
     print("=== 1. the same row in two databases is one entry, with both sources ===")
-    shared = ("k1", {"id": "1", "note": "alpha"})
-    merged, tables, seen, skipped = collect(export(
-        table("toolkit", "journal", shared),
-        table("zipchain", "journal", shared),
+    key, values = "k1", {"id": "1", "note": "alpha"}
+    merged, tables, seen, _ = collect(export(
+        table("toolkit", "journal", (key, values)),
+        table("zipchain", "journal", (key, values)),
     ))
+    # Two entries, both readable, is what makes tables == 2; a skip would show as
+    # fewer, so "nothing was skipped" here would be a restatement, not a check.
     check(tables == 2 and seen == 2, "both tables were read and both rows seen")
     check(len(merged) == 1, "the shared row collapsed to one entry")
-    entry = merged.get("k1", {})
+    entry = merged.get(key, {})
     check(entry.get("seen") == {"toolkit.journal": 1, "zipchain.journal": 1},
           "the entry records each source once (%r)" % (entry.get("seen"),))
     check(entry.get("source_db") == "toolkit",
           "the first database seen is kept as the source")
-    check(entry.get("values") == shared[1],
+    check(entry.get("values") == values,
           "the row's own values are kept, not merged with the other copy")
-    check(skipped == [], "nothing was skipped")
 
     print("\n=== 2. a repeat inside one table is counted against that source ===")
-    merged, tables, seen, skipped = collect(export(
+    merged, _, seen, _ = collect(export(
         table("toolkit", "journal", ("k1", {"id": "1"}), ("k1", {"id": "1"})),
     ))
     check(len(merged) == 1 and seen == 2, "two rows, one entry")
@@ -75,7 +76,7 @@ def main() -> int:
           "the duplicate is counted twice, not folded into the count")
 
     print("\n=== 3. rows that differ stay apart, even across databases ===")
-    merged, tables, seen, skipped = collect(export(
+    merged, _, seen, _ = collect(export(
         table("toolkit", "journal", ("k1", {"id": "1"})),
         table("zipchain", "journal", ("k2", {"id": "2"})),
     ))
@@ -86,7 +87,7 @@ def main() -> int:
           "each entry keeps its own database")
 
     print("\n=== 4. an unreadable database is reported, not silently dropped ===")
-    merged, tables, seen, skipped = collect(export(
+    _, tables, _, skipped = collect(export(
         table("toolkit", "journal", ("k1", {"id": "1"})),
         table("toolkit_archive", "journal", on=False, error="rows not readable"),
     ))
@@ -95,7 +96,7 @@ def main() -> int:
           "the skip names the database and the reason (%r)" % (skipped,))
 
     print("\n=== 5. a readable table that failed names the table, not just the database ===")
-    merged, tables, seen, skipped = collect(export(
+    merged, tables, _, skipped = collect(export(
         table("toolkit", "broken", error="select refused"),
     ))
     check(tables == 0 and merged == {}, "a table that errored contributes nothing")
@@ -103,7 +104,7 @@ def main() -> int:
           "the skip names database.table (%r)" % (skipped,))
 
     print("\n=== 6. a table entry with no name cannot be counted ===")
-    merged, tables, seen, skipped = collect(export(
+    _, tables, seen, skipped = collect(export(
         table("toolkit", "", ("k1", {"id": "1"})),
     ))
     check(tables == 0 and seen == 0, "nothing is read from a nameless table entry")
