@@ -46,6 +46,11 @@ KNOWN_MERGE_COMMITS: dict[str, str] = {
     "4e56fa3ddfec59db1c7b7c833d901dca09dec43c":
         "PR #5: requested squash, GitHub made a merge commit with default "
         "messages; content verified identical to the branch commit (b7d8a21)",
+    "22dcba1cd544ad3655bebea8adf3ef2b61db2671":
+        "PR #20: merged by .sandbox/merge_pr13.py, which sent merge_method=merge "
+        "instead of squash; its content is the branch commit e94e30e. main is "
+        "PR-only and protected, so the history cannot be rewritten. The helper now "
+        "requests squash, so this cannot recur.",
 }
 
 MIN_PREFIX = 7
