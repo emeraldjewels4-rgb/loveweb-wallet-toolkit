@@ -524,34 +524,17 @@ function database_report(): array
             if ($result === false) {
                 throw new RuntimeException('refused');
             }
+            $grants = array();
             while ($row = mysqli_fetch_row($result)) {
-                if (preg_match('/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\s+/i', (string) $row[0], $match) !== 1) {
-                    continue;
-                }
-                $privileges = array_map('trim', explode(',', $match[1]));
-
-                // MariaDB prints a database name in GRANT with its underscores
-                // escaped (\`fiatgodx\_toolkit\`.*), so a plain comparison against
-                // the database name never matches and every grant silently reads
-                // as "USAGE only". Normalised here, once, for the whole route.
-                $target = str_replace(array('\\', '`'), '', trim($match[2]));
-                $objects[$target] = array_values(array_unique(
-                    array_merge(isset($objects[$target]) ? $objects[$target] : array(), $privileges)
-                ));
-
-                $sink = null;
-                if ($target === '*.*') {
-                    $sink = 'global';
-                } elseif ($target === $name . '.*') {
-                    $sink = 'scoped';
-                }
-                if ($sink === null) {
-                    continue;
-                }
-                $current = $sink === 'global' ? $global : $scoped;
-                ${$sink} = array_values(array_unique(array_merge($current, $privileges)));
+                $grants[] = (string) $row[0];
             }
             mysqli_free_result($result);
+
+            // Parsed by the pure function, so the same code is exercised by the
+            // local harness against real MariaDB lines instead of a copy of it.
+            $objects = grant_objects($grants);
+            $global = isset($objects['*.*']) ? $objects['*.*'] : array();
+            $scoped = isset($objects[$name . '.*']) ? $objects[$name . '.*'] : array();
         } catch (Throwable $exc) {
             $grantError = 'SHOW GRANTS refused';
         }
