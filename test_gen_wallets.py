@@ -195,8 +195,13 @@ def file_checks(tmp: Path) -> None:
     g.write_private(target, "second", force=True)
     check(target.read_text(encoding="utf-8") == "second", "--force overwrites")
 
-    if os.name != "nt":
-        mode = target.stat().st_mode & 0o777
+    # One check on every platform, so the suite's count is the same in CI and on a
+    # Windows checkout: Windows has no POSIX mode, and what stat can tell it there
+    # is that the owner can still read and write the file.
+    mode = target.stat().st_mode & 0o777
+    if os.name == "nt":
+        check(mode & 0o600 == 0o600, f"the owner can read and write it ({oct(mode)})")
+    else:
         check(mode == 0o600, f"POSIX permissions are 0600 ({oct(mode)})")
 
     section("warn_if_in_git_repo()")
