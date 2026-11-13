@@ -23,6 +23,8 @@ alone -- so the runner is an entry point, not a place that hides evidence.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
@@ -51,6 +53,9 @@ SUITES: list[tuple[str, str]] = [
     ("test_mint.py", "in-memory EVM"),
     ("test_token.py", "in-memory EVM"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
+    # Last on purpose: it compares README's numbers against the counts above, and
+    # reads them from RUN_TESTS_COUNTS rather than running every suite again.
+    ("test_docs_counts.py", "README counts vs what the suites report"),
 ]
 
 PASS_LINE = re.compile(r"^\s*PASS\b")
@@ -117,6 +122,7 @@ def main(argv=None) -> int:
         return 2
 
     rows: list[dict] = []
+    measured: dict[str, int] = {}
     started_all = time.time()
 
     for name, description in selected:
@@ -143,6 +149,10 @@ def main(argv=None) -> int:
         print(f"  {verdict}: exit {result['rc']}, {result['passed']} pass, "
               f"{result['failed']} fail, {result['seconds']:.1f}s", flush=True)
         rows.append(result)
+        # Published to the suites still to run, so the docs check can compare README
+        # against the numbers this run actually measured instead of repeating them.
+        measured[name] = result["passed"]
+        os.environ["RUN_TESTS_COUNTS"] = json.dumps(measured)
         if result["rc"] != 0 and args.fail_fast:
             print("  --fail-fast: stopping here")
             break
