@@ -765,7 +765,7 @@ Four suites read the compiled contract, so on a fresh checkout build it first:
 
 ```bash
 python build_token.py          # once; four suites read build/ProjectToken.json
-python run_tests.py            # everything below + the audit: 949 checks
+python run_tests.py            # everything below + the audit: 954 checks
 
 python test_token.py           # 162 checks, in-memory EVM, nothing broadcast
 python test_mint.py            # 105 checks, in-memory EVM, nothing broadcast
@@ -783,6 +783,7 @@ python test_merge_shape.py     # 33 checks, throwaway git repositories, no netwo
 python test_merge_verify.py    # 17 checks, the verification rule, no network
 python test_merge_preflight.py # 16 checks, privilege preflight, no network
 python test_merge_collect.py   # 15 checks, row collapsing and provenance
+python test_docs_counts.py     # 5 checks, the counts in this file, kept honest
 ```
 
 The wallet exports those suites read (`wallets-operator.json`, `wallets-500.json`,
@@ -793,7 +794,7 @@ distinct passphrase per file, so the address sets never overlap. An existing
 file is never touched, so on a machine that has the real exports the real
 exports are what get tested.
 
-**One command, one exit code.** [run_tests.py](run_tests.py) runs the sixteen
+**One command, one exit code.** [run_tests.py](run_tests.py) runs the seventeen
   suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
 if any of them does -- a missing suite file and a timeout count as failures,
 never as skips, because a suite that did not run has not verified anything.
@@ -843,7 +844,7 @@ runner's platform are allowed and listed as inert (`pywin32` is the one case:
 
 That check has run: all three legs resolved the **identical 64-package set**, no
 version differing on 3.11 or 3.13, and each leg passed every suite. A Linux leg
-reports **950** checks rather than 949 because one assertion (POSIX permissions
+reports **955** checks rather than 954 because one assertion (POSIX permissions
 end up `0600`) can only run off Windows.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
@@ -930,8 +931,8 @@ being copied, synced, backed up, or read by an admin process.
 
 ## Testing the tests
 
-The sixteen suites each define their own `check()`, and **they do not agree on
-  argument order**: `test_token.py` is `check(label, condition)`, the other fifteen
+The seventeen suites each define their own `check()`, and **they do not agree on
+  argument order**: `test_token.py` is `check(label, condition)`, the other sixteen
   are `check(condition, label)`. That is a trap, and it caught a real failure. In
 `test_payment_request.py` the crash-reporting wrapper was written with the args
 the other way round, so when a test group actually crashed the suite printed
@@ -956,8 +957,8 @@ Three checks, because "the call sites look fine" is not evidence:
   the suite to name it in its summary and return 1. A suite that prints
   `ALL CHECKS PASSED` with a seeded failure fails this check.
 
-Result on the current tree: **918 `check()` call sites, 0 swapped**, every guard
-  rejects a swapped call, and all sixteen suites report a seeded failure with exit 1.
+Result on the current tree: **922 `check()` call sites, 0 swapped**, every guard
+  rejects a swapped call, and all seventeen suites report a seeded failure with exit 1.
 The auditor was itself verified by planting the exact original bug (an f-string
 condition with a boolean label) in a copy of a suite and confirming it is caught.
 
