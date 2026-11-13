@@ -765,18 +765,24 @@ Four suites read the compiled contract, so on a fresh checkout build it first:
 
 ```bash
 python build_token.py          # once; four suites read build/ProjectToken.json
-python run_tests.py            # everything below + the audit: 725 checks, 68s
+python run_tests.py            # everything below + the audit: 950 checks
 
 python test_token.py           # 162 checks, in-memory EVM, nothing broadcast
 python test_mint.py            # 105 checks, in-memory EVM, nothing broadcast
-python test_distribute.py      # 24 checks, 100 real transactions on a local chain
+python test_distribute.py      # 46 checks, 100 real transactions on a local chain
 python test_distribute_token.py # 103 checks, real ERC-20 transfers on a local chain
+python test_broadcast.py       # 92 checks, in-memory EVM, simulated endpoint failures
 python test_payment_request.py  # 99 checks, pure local computation
 python test_seed_pool.py       # 39 checks, mock QuickSwap router on a local chain
 python test_export_holders.py  # 41 checks, fake JSON-RPC chain, no network
 python test_check_funding.py   # 46 checks, both providers faked, no network
 python test_watch_only.py      # 41 checks, zpub vs seed derivation, BIP84 vectors
 python test_gen_wallets.py     # 65 checks, BIP39/BIP44/BIP84 vectors, encryption
+python test_update_toolkit.py  # 29 checks, fake git runner, no network
+python test_merge_shape.py     # 33 checks, throwaway git repositories, no network
+python test_merge_verify.py    # 17 checks, the verification rule, no network
+python test_merge_preflight.py # 16 checks, privilege preflight, no network
+python test_merge_collect.py   # 16 checks, row collapsing and provenance
 ```
 
 The wallet exports those suites read (`wallets-operator.json`, `wallets-500.json`,
@@ -787,8 +793,8 @@ distinct passphrase per file, so the address sets never overlap. An existing
 file is never touched, so on a machine that has the real exports the real
 exports are what get tested.
 
-**One command, one exit code.** [run_tests.py](run_tests.py) runs the ten
-suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
+**One command, one exit code.** [run_tests.py](run_tests.py) runs the sixteen
+  suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
 if any of them does -- a missing suite file and a timeout count as failures,
 never as skips, because a suite that did not run has not verified anything.
 
@@ -800,7 +806,7 @@ python run_tests.py --fail-fast      # stop at the first failure
 ```
 
 Counts come from lines that *begin* with `PASS`/`FAIL`. Grepping for `PASS`
-naively inflated every total by exactly one, because five of the suites end
+naively inflated every total by exactly one, because eleven of the suites end
 with the line `ALL CHECKS PASSED` -- which is a summary, not a check.
 
 **CI runs exactly that command.** [.github/workflows/tests.yml](.github/workflows/tests.yml)
@@ -837,7 +843,7 @@ runner's platform are allowed and listed as inert (`pywin32` is the one case:
 
 That check has run: all three legs resolved the **identical 64-package set**, no
 version differing on 3.11 or 3.13, and each leg passed every suite. A Linux leg
-reports **726** checks rather than 725 because one assertion (POSIX permissions
+reports **951** checks rather than 950 because one assertion (POSIX permissions
 end up `0600`) can only run off Windows.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
@@ -924,9 +930,9 @@ being copied, synced, backed up, or read by an admin process.
 
 ## Testing the tests
 
-The five suites each define their own `check()`, and **they do not agree on
-argument order**: `test_token.py` is `check(label, condition)`, the other four are
-`check(condition, label)`. That is a trap, and it caught a real failure. In
+The sixteen suites each define their own `check()`, and **they do not agree on
+  argument order**: `test_token.py` is `check(label, condition)`, the other fifteen
+  are `check(condition, label)`. That is a trap, and it caught a real failure. In
 `test_payment_request.py` the crash-reporting wrapper was written with the args
 the other way round, so when a test group actually crashed the suite printed
 `PASS False` and exited **0** — a swallowed failure reported as success.
@@ -950,8 +956,8 @@ Three checks, because "the call sites look fine" is not evidence:
   the suite to name it in its summary and return 1. A suite that prints
   `ALL CHECKS PASSED` with a seeded failure fails this check.
 
-Result on the current tree: **452 `check()` call sites, 0 swapped**, every guard
-rejects a swapped call, and all five suites report a seeded failure with exit 1.
+Result on the current tree: **918 `check()` call sites, 0 swapped**, every guard
+  rejects a swapped call, and all sixteen suites report a seeded failure with exit 1.
 The auditor was itself verified by planting the exact original bug (an f-string
 condition with a boolean label) in a copy of a suite and confirming it is caught.
 
