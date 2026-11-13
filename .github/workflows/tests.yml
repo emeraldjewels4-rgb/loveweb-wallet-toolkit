@@ -127,6 +127,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt -c "$pins"
 
+      # test_row_key_parity.py runs the real php/keys.php to compare key bytes
+      # with Python's. The runner image happens to carry a PHP build; installing
+      # php-cli names the dependency instead of relying on that, and a failure
+      # here is honest rather than a suite that could not verify the format.
+      - name: Install PHP for the key-parity suite
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends php-cli
+          php -v | head -1
+
       # test_seed_pool.py compiles a mock QuickSwap router; a fresh runner has
       # no solc, so fetch it here where a download failure is obvious rather
       # than in the middle of a suite.
