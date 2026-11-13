@@ -765,7 +765,7 @@ Four suites read the compiled contract, so on a fresh checkout build it first:
 
 ```bash
 python build_token.py          # once; four suites read build/ProjectToken.json
-python run_tests.py            # everything below + the audit: 950 checks
+python run_tests.py            # everything below + the audit: 949 checks
 
 python test_token.py           # 162 checks, in-memory EVM, nothing broadcast
 python test_mint.py            # 105 checks, in-memory EVM, nothing broadcast
@@ -782,7 +782,7 @@ python test_update_toolkit.py  # 29 checks, fake git runner, no network
 python test_merge_shape.py     # 33 checks, throwaway git repositories, no network
 python test_merge_verify.py    # 17 checks, the verification rule, no network
 python test_merge_preflight.py # 16 checks, privilege preflight, no network
-python test_merge_collect.py   # 16 checks, row collapsing and provenance
+python test_merge_collect.py   # 15 checks, row collapsing and provenance
 ```
 
 The wallet exports those suites read (`wallets-operator.json`, `wallets-500.json`,
@@ -843,7 +843,7 @@ runner's platform are allowed and listed as inert (`pywin32` is the one case:
 
 That check has run: all three legs resolved the **identical 64-package set**, no
 version differing on 3.11 or 3.13, and each leg passed every suite. A Linux leg
-reports **951** checks rather than 950 because one assertion (POSIX permissions
+reports **950** checks rather than 949 because one assertion (POSIX permissions
 end up `0600`) can only run off Windows.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
