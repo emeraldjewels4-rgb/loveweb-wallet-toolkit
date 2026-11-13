@@ -54,6 +54,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_distribute_token.py", "real ERC-20 transfers on a local chain"),
     ("test_mint.py", "in-memory EVM"),
     ("test_token.py", "in-memory EVM"),
+    ("test_run_tests.py", "the runner itself: counts, missing files, timeouts, exit codes"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
     # Last on purpose: it compares README's numbers against the counts above, and
     # reads them from RUN_TESTS_COUNTS rather than running every suite again.
