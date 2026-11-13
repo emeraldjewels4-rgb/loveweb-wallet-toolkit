@@ -9,6 +9,11 @@ is driven here over throwaway suites in a temporary directory, with the runner's
 and SUITES swapped, so no project file is touched and the real suite list is never
 re-entered.
 
+The handoff to the docs check is driven the same way: RUN_TESTS_COUNTS has to hold
+the counts measured so far by the time each later suite starts, and this file must
+put the caller's value back afterwards -- the outer runner's own handoff is in that
+variable while this suite runs.
+
     python test_run_tests.py
 """
 
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -47,6 +53,17 @@ print("  PASS  slow", flush=True)
 time.sleep(30)
 """
 
+# Records what RUN_TESTS_COUNTS held when it started -- the handoff the docs check
+# reads instead of running every suite a second time.
+PROBE = """\
+import os
+import pathlib
+
+counts = os.environ.get("RUN_TESTS_COUNTS", "")
+pathlib.Path("counts-%(slot)s.json").write_text(counts or "absent", encoding="utf-8")
+print("  PASS  probe")
+"""
+
 
 def check(cond: bool, label: str) -> None:
     """Record one verdict, refusing anything that could not be a real condition.
@@ -71,10 +88,34 @@ def write(tmp: Path, name: str, body: str) -> None:
     (tmp / name).write_text(body, encoding="utf-8")
 
 
-def drive(tmp: Path, suites: list[tuple[str, str]], *argv: str) -> tuple[int, str]:
-    """Run the real main() against these suites; return (exit code, its output)."""
+def probe_counts(tmp: Path, slot: str):
+    """What the probe suite saw: the parsed counts, or the raw text it found.
+
+    A handoff that never happened leaves "absent" here, so returning the text rather
+    than raising turns that into a named failing check instead of a traceback.
+    """
+    path = tmp / f"counts-{slot}.json"
+    text = path.read_text(encoding="utf-8") if path.is_file() else "(no probe output)"
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def drive(tmp: Path, suites: list[tuple[str, str]], *argv: str,
+          isolate_counts: bool = False) -> tuple[int, str]:
+    """Run the real main() against these suites; return (exit code, its output).
+
+    isolate_counts empties RUN_TESTS_COUNTS for the duration. Under the real runner
+    that variable already holds the outer run's counts, and main() only overwrites it
+    after the first suite -- so a probe that runs first would otherwise see them.
+    Either way the caller's value is put back before returning: this suite runs in the
+    middle of the outer handoff and must not disturb it.
+    """
     saved_root, saved_suites = run_tests.ROOT, run_tests.SUITES
     saved_env = os.environ.get("RUN_TESTS_COUNTS")
+    if isolate_counts:
+        os.environ.pop("RUN_TESTS_COUNTS", None)
     run_tests.ROOT, run_tests.SUITES = tmp, list(suites)
     buffer = io.StringIO()
     try:
@@ -163,6 +204,47 @@ def main() -> int:
         code, out = drive(tmp, ordered)
         check(code == 1 and "running test_alpha.py" in out,
               "without the flag the next suite still runs")
+
+    with tempfile.TemporaryDirectory() as folder:
+        tmp = Path(folder)
+        write(tmp, "test_alpha.py", PASSING)
+
+        section("the handoff to the docs check")
+        write(tmp, "test_probe_b.py", PROBE % {"slot": "b"})
+        write(tmp, "test_probe_c.py", PROBE % {"slot": "c"})
+        drive(tmp, [("test_alpha.py", "2 checks"),
+                    ("test_probe_b.py", "runs second"),
+                    ("test_probe_c.py", "runs third")], isolate_counts=True)
+        seen_b = probe_counts(tmp, "b")
+        seen_c = probe_counts(tmp, "c")
+        check(seen_b == {"test_alpha.py": 2},
+              f"a suite sees the counts measured before it ({seen_b})")
+        check(seen_c == {"test_alpha.py": 2, "test_probe_b.py": 1},
+              f"and the handoff accumulates as each suite finishes ({seen_c})")
+
+        write(tmp, "test_probe_first.py", PROBE % {"slot": "first"})
+        drive(tmp, [("test_probe_first.py", "runs first")], isolate_counts=True)
+        first = probe_counts(tmp, "first")
+        check(first == "absent",
+              f"the first suite starts with no counts at all ({first})")
+
+        # This suite runs under the real runner, so the ambient value is the outer
+        # handoff: put it back exactly as it was found.
+        ambient = os.environ.get("RUN_TESTS_COUNTS")
+        try:
+            os.environ["RUN_TESTS_COUNTS"] = '{"sentinel": 1}'
+            drive(tmp, [("test_alpha.py", "a passing suite")])
+            check(os.environ.get("RUN_TESTS_COUNTS") == '{"sentinel": 1}',
+                  "drive puts the caller's value back after the run")
+            os.environ.pop("RUN_TESTS_COUNTS", None)
+            drive(tmp, [("test_alpha.py", "a passing suite")])
+            check("RUN_TESTS_COUNTS" not in os.environ,
+                  "and stays unset when it started unset")
+        finally:
+            if ambient is None:
+                os.environ.pop("RUN_TESTS_COUNTS", None)
+            else:
+                os.environ["RUN_TESTS_COUNTS"] = ambient
 
     section("the real command's exit code")
     # The runner itself, as a process: --only with no match must exit 2 through
