@@ -7,6 +7,11 @@ PASS lines, run_tests.py counts them, and audit_test_checks.py counts the
 suite that is added, renamed or grown cannot leave the list quietly wrong -- which
 is exactly how it went stale before.
 
+It also reads .github/workflows/tests.yml, because the interpreter matrix and the
+job count are stated in the README's CI paragraph but belong to the workflow, and
+they went stale there twice -- the matrix had gained 3.14 while the prose still
+named three interpreters in two places.
+
 Under run_tests.py it reuses the counts that run has already collected (the runner
 exports them in RUN_TESTS_COUNTS), so it costs nothing. Run on its own it executes
 each suite itself, which takes as long as the suites do.
@@ -27,6 +32,7 @@ import run_tests
 
 ROOT = Path(__file__).resolve().parent
 README = ROOT / "README.md"
+WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 SELF = Path(__file__).name
 AUDIT = "audit_test_checks.py"
 
@@ -74,6 +80,37 @@ def reported_counts(names: list[str]) -> dict[str, int]:
         counts[name] = sum(1 for line in (done.stdout or "").splitlines()
                            if run_tests.PASS_LINE.match(line))
     return counts
+
+
+def workflow_facts() -> tuple[list[str], list[str]]:
+    """The interpreter matrix and job names, read from the workflow file.
+
+    Parsed by hand rather than with a YAML library: this suite has no dependencies
+    of its own, and the two shapes it needs are unambiguous -- matrix entries are
+    the quoted versions in `python-version:` lines, job names are the keys at two
+    spaces directly under `jobs:`.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    matrix = re.findall(r'-\s*python-version:\s*"([0-9]+\.[0-9]+)"', text)
+    jobs, inside = [], False
+    for line in text.splitlines():
+        if re.match(r"^jobs:\s*$", line):
+            inside = True
+            continue
+        if not inside:
+            continue
+        if line.strip() and not line.startswith(" "):
+            break
+        named = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        if named:
+            jobs.append(named.group(1))
+    return matrix, jobs
+
+
+def interpreter_lists(text: str) -> list[list[str]]:
+    """Every bold list of interpreter versions in the README, as written."""
+    found = re.findall(r"\*\*(?:Python )?(\d+\.\d+(?:(?:,| and)\s*\d+\.\d+)+)\*\*", text)
+    return [[v for v in re.split(r",\s*|\s+and\s+", item) if v] for item in found]
 
 
 def audited_call_sites() -> int | None:
@@ -138,6 +175,25 @@ def main() -> int:
     check(stated_word is not None and WORDS.get(stated_word.group(1).lower()) == len(suites),
           "README says %s suite(s), %d run"
           % (stated_word.group(1) if stated_word else "nothing", len(suites)))
+
+    print("\n=== 6. the interpreter lists match the workflow's matrix ===")
+    matrix, jobs = workflow_facts()
+    listed = interpreter_lists(text)
+    wrong = [entry for entry in listed if entry != matrix]
+    check(bool(matrix) and bool(listed) and not wrong,
+          "%d list(s) match %s%s"
+          % (len(listed), ", ".join(matrix) or "nothing",
+             "" if not wrong else "; disagreeing: " + str(wrong)))
+
+    print("\n=== 7. the job count matches the workflow ===")
+    counted = re.search(r"(\w+) identical jobs instead of (\w+)", text)
+    legs = WORDS.get(counted.group(2).lower()) if counted else None
+    doubled = WORDS.get(counted.group(1).lower()) if counted else None
+    check(legs == len(matrix) and doubled == 2 * len(matrix) and len(jobs) == 1,
+          "README says %s jobs instead of %s; the workflow runs %d job(s) across "
+          "%d interpreter(s)"
+          % (counted.group(1) if counted else "nothing",
+             counted.group(2) if counted else "nothing", len(jobs), len(matrix)))
 
     print("\n" + "=" * 60)
     if FAILED:
