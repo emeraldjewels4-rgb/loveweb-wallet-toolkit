@@ -35,6 +35,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/keys.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -61,26 +62,6 @@ function refuse(int $code, string $message): void
     http_response_code($code);
     echo json_encode(array('error' => $message), JSON_UNESCAPED_SLASHES) . "\n";
     exit;
-}
-
-/**
- * The identity of one row: SHA-256 over the table name and its values.
- *
- * The table name is in the key so a row in `journal` is not the same row as an
- * identical one in `ledger`; the database name is deliberately NOT in it, so the
- * same row found in two databases merges to one row rather than two.
- *
- * Keys are sorted first: two databases return the same columns in whatever order
- * their schema declares, and unsorted, that difference alone would look like two
- * different rows.
- *
- * @param array<string,mixed> $values
- */
-function row_key(string $table, array $values): string
-{
-    ksort($values);
-
-    return hash('sha256', $table . "\n" . json_encode($values, JSON_UNESCAPED_SLASHES));
 }
 
 /**
