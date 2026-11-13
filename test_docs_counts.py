@@ -38,12 +38,6 @@ AUDIT = "audit_test_checks.py"
 
 FAILED: list[str] = []
 
-# README quotes the figures a Windows run reports. Exactly one assertion in one
-# suite cannot run there -- test_gen_wallets.py's 0600 mode check -- so a Linux run
-# reports one more, which README's CI paragraph says in as many words. A delta in
-# any other suite, or more than one here, is drift and fails.
-POSIX_ONLY = {"test_gen_wallets.py": 1}
-
 WORDS = {word: value for value, word in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve "
     "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())}
@@ -139,23 +133,15 @@ def main() -> int:
     # This file's own figure is the one number it cannot measure: its count is only
     # complete after this check has run. Its presence is still held to check 1.
     measured = reported_counts([name for name in suites if name != SELF])
-    wrong = []
-    for name, count in measured.items():
-        claim = claims.get(name)
-        if count == claim or count == (claim or 0) + POSIX_ONLY.get(name, 0):
-            continue
-        wrong.append((name, claim, count))
+    wrong = [(name, claims.get(name), count) for name, count in measured.items()
+             if claims.get(name) != count]
     check(not wrong,
           "counts match for %d suite(s)%s"
           % (len(measured), "" if not wrong else ": " + ", ".join(
               "%s README %s vs %d" % (name, claim, count) for name, claim, count in wrong)))
 
     print("\n=== 3. the total is the sum of the parts ===")
-    # Off Windows the POSIX-only assertions above inflate the measured sum; the
-    # README's total describes the Windows figures, so take them back out.
-    extra = sum(1 for name, delta in POSIX_ONLY.items()
-                if measured.get(name) == claims.get(name, 0) + delta)
-    total = sum(measured.values()) - extra + claims.get(SELF, 0)
+    total = sum(measured.values()) + claims.get(SELF, 0)
     stated_total = re.search(r"run_tests\.py\s+#[^\n]*?(\d+) checks", text)
     check(stated_total is not None and int(stated_total.group(1)) == total,
           "README total %s equals the sum %d"
