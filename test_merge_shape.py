@@ -177,10 +177,24 @@ def main() -> int:
         rc, _ = run("--repo", str(merged), "--base", "no-such-base")
         check(rc == 2, "an unresolvable --base exits 2")
 
-        print("\n=== 8. this repository's own main is clean ===")
+        print("\n=== 8. this repository's own history is squashed ===")
         repo_root = Path(__file__).resolve().parent
-        rc, _ = run("--repo", str(repo_root), "--ref", "HEAD", "--quiet")
-        check(rc == 0, "checking this checkout's tip finds no unexpected merge commit")
+        # On a pull request, HEAD is GitHub's merge of the branch into main -- a
+        # merge by construction -- so checking it would fail every PR for the shape
+        # GitHub imposes, and checking it on a depth-1 checkout passes on nothing,
+        # because such a clone reports a merge commit with no parents. CI fetches
+        # full history and passes the branch head in PR_HEAD_SHA; this reads that
+        # when it is set and falls back to HEAD elsewhere (a local run, or a push).
+        ref = os.environ.get("PR_HEAD_SHA", "").strip() or "HEAD"
+        counted = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-list", "--count", ref],
+            capture_output=True, text=True,
+        )
+        history = int(counted.stdout.strip()) if counted.returncode == 0 and counted.stdout.strip() else 0
+        check(history > 1, f"the checkout carries history behind {ref} ({history} commit(s))")
+
+        rc, _ = run("--repo", str(repo_root), "--ref", ref, "--quiet")
+        check(rc == 0, f"checking {ref} finds no unexpected merge commit")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

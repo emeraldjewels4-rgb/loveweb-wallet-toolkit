@@ -68,6 +68,11 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          # Full history on purpose: the merge-shape check reads each commit's
+          # parents, and a depth-1 clone reports a merge commit as parentless, so
+          # that check would pass without inspecting anything.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -137,6 +142,11 @@ jobs:
         run: python build_token.py
 
       - name: Run every suite
+        env:
+          # On a pull request HEAD is GitHub's own merge of the branch into main,
+          # which is a merge by construction; the shape check must look at the
+          # branch head instead, and does so when this is set.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python run_tests.py
 
       # Runs after the suite on purpose: if the pins are wrong, the suite result
