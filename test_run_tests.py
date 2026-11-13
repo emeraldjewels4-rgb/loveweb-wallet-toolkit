@@ -194,10 +194,20 @@ def main() -> int:
         check(seen == {"test_alpha.py": 2, "test_beta.py": 2},
               f"each suite sees the counts measured before it ({seen})")
 
-        os.environ["RUN_TESTS_COUNTS"] = '{"sentinel": 1}'
-        drive(tmp, [("test_alpha.py", "a passing suite")])
-        check(os.environ.get("RUN_TESTS_COUNTS") == '{"sentinel": 1}',
-              "and the caller's value is put back after the run")
+        # The sentinel stands in for the outer runner's handoff, which is this
+        # process's real value: put that back rather than leaving the sentinel for
+        # whatever runs next in here.
+        ambient = os.environ.get("RUN_TESTS_COUNTS")
+        try:
+            os.environ["RUN_TESTS_COUNTS"] = '{"sentinel": 1}'
+            drive(tmp, [("test_alpha.py", "a passing suite")])
+            check(os.environ.get("RUN_TESTS_COUNTS") == '{"sentinel": 1}',
+                  "and the caller's value is put back after the run")
+        finally:
+            if ambient is None:
+                os.environ.pop("RUN_TESTS_COUNTS", None)
+            else:
+                os.environ["RUN_TESTS_COUNTS"] = ambient
 
     section("the real command's exit code")
     # The runner as a process: the exit status comes from `raise SystemExit(main())`,
