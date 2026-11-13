@@ -186,6 +186,19 @@ def main() -> int:
         check(code == 1 and "running test_alpha.py" in out,
               "without the flag the next suite still runs")
 
+        section("--verbose")
+        # Output is captured per suite by default, so the flag is the only way a
+        # suite's own lines reach the terminal -- under its heading, before the verdict.
+        one = [("test_ok.py", "a suite that passes")]
+        _, quiet = drive(tmp, one)
+        code, loud = drive(tmp, one, "--verbose")
+        heading = loud.find("running test_ok.py")
+        echoed = loud.find("    PASS  one")
+        verdict = loud.find("ok: exit 0")
+        check(code == 0 and "    PASS  one" not in quiet
+              and -1 < heading < echoed < verdict,
+              "--verbose echoes the PASS lines under the heading, before the verdict")
+
         section("the handoff to the docs check")
         write(tmp, "test_probe.py", PROBE)
         drive(tmp, [("test_alpha.py", "2 checks"), ("test_beta.py", "2 more"),
