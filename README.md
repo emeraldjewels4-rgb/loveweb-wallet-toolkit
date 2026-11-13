@@ -761,29 +761,27 @@ If a contract was deployed elsewhere (Remix, another machine), verify it with
 
 ### Test it
 
-Four suites read the compiled contract, so on a fresh checkout build it first:
-
 ```bash
 python build_token.py          # once; four suites read build/ProjectToken.json
 python run_tests.py            # everything below + the audit: 954 checks
 
-python test_token.py           # 162 checks, in-memory EVM, nothing broadcast
-python test_mint.py            # 105 checks, in-memory EVM, nothing broadcast
-python test_distribute.py      # 46 checks, 100 real transactions on a local chain
-python test_distribute_token.py # 103 checks, real ERC-20 transfers on a local chain
-python test_broadcast.py       # 92 checks, in-memory EVM, simulated endpoint failures
-python test_payment_request.py  # 99 checks, pure local computation
-python test_seed_pool.py       # 39 checks, mock QuickSwap router on a local chain
-python test_export_holders.py  # 41 checks, fake JSON-RPC chain, no network
-python test_check_funding.py   # 46 checks, both providers faked, no network
-python test_watch_only.py      # 41 checks, zpub vs seed derivation, BIP84 vectors
-python test_gen_wallets.py     # 65 checks, BIP39/BIP44/BIP84 vectors, encryption
-python test_update_toolkit.py  # 29 checks, fake git runner, no network
-python test_merge_shape.py     # 33 checks, throwaway git repositories, no network
-python test_merge_verify.py    # 17 checks, the verification rule, no network
-python test_merge_preflight.py # 16 checks, privilege preflight, no network
-python test_merge_collect.py   # 15 checks, row collapsing and provenance
-python test_docs_counts.py     # 5 checks, the counts in this file, kept honest
+python test_token.py           # 162 checks
+python test_mint.py            # 105 checks
+python test_distribute.py      # 46 checks
+python test_distribute_token.py # 103 checks
+python test_broadcast.py       # 92 checks
+python test_payment_request.py  # 99 checks
+python test_seed_pool.py       # 39 checks
+python test_export_holders.py  # 41 checks
+python test_check_funding.py   # 46 checks
+python test_watch_only.py      # 41 checks
+python test_gen_wallets.py     # 65 checks
+python test_update_toolkit.py  # 29 checks
+python test_merge_shape.py     # 33 checks
+python test_merge_verify.py    # 17 checks
+python test_merge_preflight.py # 16 checks
+python test_merge_collect.py   # 15 checks
+python test_docs_counts.py     # 5 checks
 ```
 
 The wallet exports those suites read (`wallets-operator.json`, `wallets-500.json`,
@@ -795,7 +793,7 @@ file is never touched, so on a machine that has the real exports the real
 exports are what get tested.
 
 **One command, one exit code.** [run_tests.py](run_tests.py) runs the seventeen
-  suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
+suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
 if any of them does -- a missing suite file and a timeout count as failures,
 never as skips, because a suite that did not run has not verified anything.
 
@@ -812,12 +810,12 @@ with the line `ALL CHECKS PASSED` -- which is a summary, not a check.
 
 **CI runs exactly that command.** [.github/workflows/tests.yml](.github/workflows/tests.yml)
 runs `python run_tests.py` on every push to `main` and on every pull request
-across **Python 3.11, 3.12 and 3.13** (a matrix with `fail-fast: false`, so one
-bad interpreter still reports the other two), and each job fails if any suite
+across **Python 3.11, 3.12, 3.13 and 3.14** (a matrix with `fail-fast: false`, so
+one bad interpreter still reports the others), and each job fails if any suite
 exits nonzero -- so a red build always means a failing check. Branch pushes are
 not a trigger: a bare `push:` also fires for feature branches, which ran the
-whole matrix twice per PR commit, six identical jobs instead of three. 3.11 is the oldest version every
-requirement allows and 3.13 the newest; the pins are ranges, not exact versions,
+whole matrix twice per PR commit, eight identical jobs instead of four. 3.11 is
+the oldest version every requirement allows and 3.14 the newest; the pins are ranges, not exact versions,
 so the interpreter is part of what can drift. The suites are offline (in-memory EVMs, mock contracts, fake
 providers), so no chain access and no secrets are involved; the only network
 traffic is installing dependencies and fetching `solc` for the mock-router
@@ -825,7 +823,8 @@ fixture. `test_seed_pool.py` will fetch `solc` itself on a machine that has
 none, so a fresh checkout works without a setup step.
 
 **The matrix is pinned, not left to the resolver.** [constraints.txt](constraints.txt)
-is the exact resolved closure (65 packages) and governs all three interpreters,
+is the exact resolved closure (65 entries, 64 of them installed on a Linux leg --
+`pywin32` is Windows-only) and governs every interpreter,
 so every leg installs the same versions and a failure on one of them is a real
 portability finding rather than two resolutions that quietly disagreed:
 
@@ -842,8 +841,10 @@ runner's platform are allowed and listed as inert (`pywin32` is the one case:
 `web3` pulls it in on Windows only). The freeze is uploaded as the
 `resolved-py<minor>` artifact, so drift arrives as a diff instead of a mystery.
 
-That check has run: all three legs resolved the **identical 64-package set**, no
-version differing on 3.11 or 3.13, and each leg passed every suite. A Linux leg
+That check has run: every leg installs the same **64 packages**, 3.11, 3.12 and
+3.13 to the identical set, and 3.14 differing in exactly one line --
+`coincurve==22.0.0` from `constraints-py3.14.txt`, built from source because no
+cp314 wheel is published -- with every leg passing every suite. A Linux leg
 reports **955** checks rather than 954 because one assertion (POSIX permissions
 end up `0600`) can only run off Windows.
 If a pin genuinely cannot work on one interpreter, a
