@@ -149,6 +149,42 @@ function db_named(string $label): ?mysqli
 }
 
 /**
+ * The GRANT targets a set of SHOW GRANTS lines describes, normalised.
+ *
+ * Split out of the report so the parsing can be exercised against real MariaDB
+ * output without a database: the lines are the only input, and the map returned
+ * is exactly what privileges_on() consumes.
+ *
+ * MariaDB prints a database name with its underscores escaped
+ * (`fiatgodx\_toolkit`.*) and always in backticks, so stripping both once here
+ * is what lets a plain comparison against the configured name match at all.
+ * A PROXY grant matches the pattern as well, but names the target `''@''`, which
+ * no database or table lookup will ever ask about; it is kept in the map and can
+ * never affect a privilege decision. A line that is not a GRANT at all is skipped.
+ *
+ * @param array<int,string> $lines
+ * @return array<string,array<int,string>> target => privileges
+ */
+function grant_objects(array $lines): array
+{
+    $objects = array();
+    foreach ($lines as $line) {
+        if (preg_match('/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\s+/i', (string) $line, $match) !== 1) {
+            continue;
+        }
+
+        $privileges = array_map('trim', explode(',', $match[1]));
+        $target = str_replace(array('\\', '`'), '', trim($match[2]));
+        $objects[$target] = array_values(array_unique(
+            array_merge(isset($objects[$target]) ? $objects[$target] : array(), $privileges)
+        ));
+    }
+
+    return $objects;
+}
+
+
+/**
  * Which privileges the account holds on one table, from the GRANT targets it has.
  *
  * Pure, so it can be tested without a server: the caller passes the map that
