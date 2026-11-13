@@ -761,8 +761,10 @@ If a contract was deployed elsewhere (Remix, another machine), verify it with
 
 ### Test it
 
+The four contract suites read `build/ProjectToken.json`, which the setup block in
+[Contributing](#contributing) builds; build it once per checkout.
+
 ```bash
-python build_token.py          # once; four suites read build/ProjectToken.json
 python run_tests.py            # everything below + the audit: 954 checks
 
 python test_token.py           # 162 checks
@@ -981,7 +983,7 @@ python run_tests.py        # every suite + the audit, one exit code
 ```
 
 `run_tests.py` is the contract, and the CI badge above means one thing: that
-command exited 0 on **3.11, 3.12 and 3.13** with the same pinned dependencies.
+command exited 0 on **3.11, 3.12, 3.13 and 3.14** with the same pinned dependencies.
 A red leg is a portability finding, not noise — do not widen a version range to
 make it go away. If a single pin genuinely cannot work on one interpreter, add
 `constraints-py<minor>.txt` with the pins that differ; CI prefers it for that
