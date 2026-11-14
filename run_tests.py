@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 # a 13-second EVM run. Each entry is (path, what it runs against).
 SUITES: list[tuple[str, str]] = [
     ("test_payment_request.py", "pure local computation"),
+    ("test_no_secrets.py", "tracked files hold no key, password or wallet export"),
     ("test_merge_shape.py", "throwaway git repositories, no network"),
     ("test_merge_verify.py", "pure verification rule, no network"),
     ("test_merge_preflight.py", "pure privilege preflight, no network"),
