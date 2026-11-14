@@ -180,11 +180,13 @@ def main() -> int:
     counted = re.search(r"(\w+) identical jobs instead of (\w+)", text)
     legs = WORDS.get(counted.group(2).lower()) if counted else None
     doubled = WORDS.get(counted.group(1).lower()) if counted else None
-    check(legs == len(matrix) and doubled == 2 * len(matrix) and len(jobs) == 1,
-          "README says %s jobs instead of %s; the workflow runs %d job(s) across "
+    check(legs == len(matrix) and doubled == 2 * len(matrix)
+          and jobs == ["tests", "counts"],
+          "README says %s jobs instead of %s; the workflow runs %s across "
           "%d interpreter(s)"
           % (counted.group(1) if counted else "nothing",
-             counted.group(2) if counted else "nothing", len(jobs), len(matrix)))
+             counted.group(2) if counted else "nothing",
+             " then ".join(jobs) or "nothing", len(matrix)))
 
     print("\n" + "=" * 60)
     if FAILED:
