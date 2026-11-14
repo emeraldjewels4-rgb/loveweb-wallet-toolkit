@@ -199,6 +199,26 @@ def main() -> int:
               and -1 < heading < echoed < verdict,
               "--verbose echoes the PASS lines under the heading, before the verdict")
 
+        section("--json")
+        target = tmp / "results.json"
+        code, out = drive(tmp, [("test_alpha.py", "a"), ("test_beta.py", "b")],
+                          "--json", str(target))
+        payload = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+        rows = {row.get("name"): row for row in payload.get("suites", [])}
+        check(code == 0 and set(rows) == {"test_alpha.py", "test_beta.py"},
+              "it writes one row per suite it ran")
+        check(rows.get("test_alpha.py", {}).get("passed") == 2
+              and payload.get("checks") == 4,
+              "the counts in the file are the ones the table printed")
+        check(all(isinstance(row.get("seconds"), float) for row in rows.values()),
+              "with a timing for each suite")
+        failing = tmp / "failed.json"
+        code, out = drive(tmp, [("test_bad.py", "one check fails")],
+                          "--json", str(failing))
+        failed_rows = json.loads(failing.read_text(encoding="utf-8")) if failing.is_file() else {}
+        check(code == 1 and failed_rows.get("failed_checks") == 1,
+              "and a failing run still writes the file, which CI uploads")
+
         section("the handoff to the docs check")
         write(tmp, "test_probe.py", PROBE)
         drive(tmp, [("test_alpha.py", "2 checks"), ("test_beta.py", "2 more"),

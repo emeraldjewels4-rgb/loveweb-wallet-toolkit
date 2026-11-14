@@ -8,6 +8,7 @@ suite that nobody remembers to run is a suite that silently rots.
     python run_tests.py --verbose        # stream each suite's output live
     python run_tests.py --only seed      # just the suites whose name matches
     python run_tests.py --fail-fast      # stop at the first failure
+    python run_tests.py --json out.json  # also write those numbers as JSON
 
 Counts come from lines that BEGIN with PASS or FAIL, not from `grep -c PASS`:
 several suites end with "ALL CHECKS PASSED", and that closing line is not a
@@ -57,6 +58,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_mint.py", "in-memory EVM"),
     ("test_token.py", "in-memory EVM"),
     ("test_run_tests.py", "the runner itself: what it counts, refuses and exits with"),
+    ("test_compare_legs.py", "the CI leg comparator: identical legs pass, drift is named"),
     ("mutation_check.py", "every named mutation must be caught by its suite"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
     # Last on purpose: it compares README's numbers against the counts above, and
@@ -99,6 +101,37 @@ def run(path: Path, timeout: int) -> dict:
                 "seconds": time.time() - started, "timed_out": True}
 
 
+def write_json(path: str, rows: list[dict], total_pass: int, total_fail: int,
+               total_seconds: float, started_at: str, listed: int) -> None:
+    """The numbers the table prints, for something other than a person to read.
+
+    Written whatever the verdict, because a leg that failed is exactly the one
+    whose numbers are worth comparing.
+    """
+    payload = {
+        "python": "%d.%d.%d" % sys.version_info[:3],
+        "started_at": started_at,
+        "seconds": round(total_seconds, 3),
+        "suites_listed": listed,
+        "suites_run": len(rows),
+        "checks": total_pass,
+        "failed_checks": total_fail,
+        "suites": [
+            {
+                "name": row["name"],
+                "exit": row["rc"],
+                "passed": row["passed"],
+                "failed": row["failed"],
+                "seconds": round(row["seconds"], 3),
+                "timed_out": row["timed_out"],
+            }
+            for row in rows
+        ],
+    }
+    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
+
+
 def count(lines: list[str]) -> tuple[int, int]:
     passed = sum(1 for line in lines if PASS_LINE.match(line))
     failed = sum(1 for line in lines if FAIL_LINE.match(line))
@@ -118,6 +151,8 @@ def main(argv=None) -> int:
                         help="stop at the first failing suite")
     parser.add_argument("--timeout", type=int, default=900,
                         help="per-suite timeout in seconds (default 900)")
+    parser.add_argument("--json", metavar="PATH",
+                        help="also write the per-suite counts and timings to PATH")
     args = parser.parse_args(argv)
 
     selected = [(p, d) for p, d in SUITES
@@ -175,6 +210,10 @@ def main(argv=None) -> int:
 
     total_pass = sum(r["passed"] for r in rows)
     total_fail = sum(r["failed"] for r in rows)
+    if args.json:
+        write_json(args.json, rows, total_pass, total_fail, total_seconds,
+                   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_all)),
+                   len(SUITES))
     failed_suites = [r for r in rows if r["rc"] != 0]
     skipped = len(SUITES) - len(rows)
     print("-" * 78)

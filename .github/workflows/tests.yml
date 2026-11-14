@@ -157,7 +157,18 @@ jobs:
           # which is a merge by construction; the shape check must look at the
           # branch head instead, and does so when this is set.
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python run_tests.py
+        run: python run_tests.py --json results-${{ matrix.python-version }}.json
+
+      # The numbers this leg measured, kept even when it failed: a red leg is
+      # exactly the one whose counts are worth comparing.
+      - name: Keep the counts this leg measured
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.python-version }}
+          path: results-${{ matrix.python-version }}.json
+          if-no-files-found: warn
+          retention-days: 14
 
       # Runs after the suite on purpose: if the pins are wrong, the suite result
       # is worth having as well, and the job still goes red below. Every
@@ -237,3 +248,29 @@ jobs:
           path: resolved-py*.txt
           if-no-files-found: ignore
           retention-days: 14
+
+  # Every leg runs the same suites, so every leg must report the same counts.
+  # That claim used to be verified by reading four logs by hand; this compares the
+  # artifacts the legs uploaded and fails when one of them disagrees. It needs
+  # `tests`, so a failed leg skips this job instead of comparing a missing file.
+  counts:
+    name: legs agree on the counts
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Collect every leg's results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+          merge-multiple: true
+
+      - name: Compare the per-suite counts
+        run: |
+          set -euo pipefail
+          ls -l results
+          python compare_legs.py results/*.json

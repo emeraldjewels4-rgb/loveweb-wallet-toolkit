@@ -95,3 +95,4 @@ seed-signer.txt
 # part of the toolkit, and the transaction records collected there put addresses
 # and amounts side by side, which is the same reason the maps above stay local.
 .sandbox/
+results-*.json

@@ -70,6 +70,13 @@ MUTATIONS: list[Mutation] = [
         "keys.php: drop JSON_PRESERVE_ZERO_FRACTION (1.0 collides with 1)",
     ),
     Mutation(
+        "run_tests.py",
+        '                "passed": row["passed"],',
+        '                "passed": 0,',
+        "test_run_tests.py",
+        "run_tests: --json records zero passes for a passing suite",
+    ),
+    Mutation(
         "php/merge.php",
         "const MERGE_BIND_TYPES = 'sssiiss';",
         "const MERGE_BIND_TYPES = 'sssissi';",
