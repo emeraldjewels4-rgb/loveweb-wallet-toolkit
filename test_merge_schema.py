@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "php" / "db.php"
 SYNC = ROOT / "php" / "db_sync.php"
+MERGE = ROOT / "php" / "merge.php"
 
 TABLE = "merged_rows"
 
@@ -182,9 +183,10 @@ def main() -> int:
 
     db_source = DB.read_text(encoding="utf-8")
     sync_source = SYNC.read_text(encoding="utf-8")
+    merge_source = MERGE.read_text(encoding="utf-8")
 
     ensure = statement(php_literals(function_body(db_source, "ensure_merged_table")))
-    merge = statement(php_literals(function_body(sync_source, "merge_rows")))
+    merge = statement(php_literals(function_body(merge_source, "merge_insert_sql")))
     status_body = function_body(db_source, "merged_status")
     report_body = function_body(sync_source, "database_report")
 
@@ -205,7 +207,7 @@ def main() -> int:
         r"INSERT INTO (\w+)\s*\((.*?)\)\s*VALUES\s*\((.*?)\)\s*ON DUPLICATE KEY UPDATE\s*(.*)",
         merge, re.S | re.I,
     )
-    check(insert is not None, "the INSERT statement can be found in merge_rows")
+    check(insert is not None, "the INSERT statement can be found in merge_insert_sql")
     if insert is None:
         return finish()
     written = [name.strip(" `") for name in insert.group(2).split(",")]
@@ -240,12 +242,17 @@ def main() -> int:
           == ["first_seen", "last_seen"],
           "first_seen and last_seen come from UTC_TIMESTAMP(), not from the caller")
 
-    bind = re.search(r"bind_param\(\s*\$statement\s*,\s*'([sdib]+)'",
-                     function_body(sync_source, "merge_rows"))
-    check(bind is not None, "the bind_param type string can be found")
+    bind = re.search(r"const MERGE_BIND_TYPES = '([sdib]+)';", merge_source)
+    check(bind is not None, "the bind types are declared once, as MERGE_BIND_TYPES")
     if bind:
         check(len(bind.group(1)) == len(bound),
               f"one bind type per placeholder: {bind.group(1)!r} covers {len(bound)}")
+    check("MERGE_BIND_TYPES" in function_body(merge_source, "merge_write"),
+          "merge_write passes that string to the writer")
+    forwarded = re.search(r"mysqli_stmt_bind_param\(\s*\$this->statement\s*,\s*\$types",
+                          function_body(sync_source, "insert"))
+    check(forwarded is not None,
+          "and the mysqli writer hands it to bind_param unchanged")
 
     updated = [name.strip(" `") for name in
                re.findall(r"(\w+)\s*=\s*(?:VALUES\(|GREATEST\(|UTC_TIMESTAMP\()",

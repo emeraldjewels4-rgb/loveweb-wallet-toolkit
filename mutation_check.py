@@ -70,11 +70,18 @@ MUTATIONS: list[Mutation] = [
         "keys.php: drop JSON_PRESERVE_ZERO_FRACTION (1.0 collides with 1)",
     ),
     Mutation(
-        "php/db_sync.php",
+        "php/merge.php",
+        "const MERGE_BIND_TYPES = 'sssiiss';",
+        "const MERGE_BIND_TYPES = 'sssissi';",
+        "test_merge_rows.py",
+        "merge.php: bind types widened to strings for seen and bytes",
+    ),
+    Mutation(
+        "php/merge.php",
         "row_json, first_seen, last_seen, run_token)'",
         "row_json, last_seen, run_token)'",
         "test_merge_schema.py",
-        "db_sync: INSERT drops first_seen out of the column list",
+        "merge.php: INSERT drops first_seen out of the column list",
     ),
 ]
 

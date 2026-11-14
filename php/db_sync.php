@@ -36,6 +36,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/keys.php';
+require_once __DIR__ . '/merge.php';
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -226,6 +227,59 @@ function export_all(int $cap): array
 }
 
 /**
+ * The real writer: one prepared statement for the whole merge, and the
+ * transaction the route wraps around it.
+ *
+ * merge.php decides what a row is; this only moves the bytes. That split is why
+ * the rules can be executed in a test with no MySQL and no host.
+ */
+final class MysqliMergeWriter implements MergeWriter
+{
+    private mysqli $link;
+    private ?mysqli_stmt $statement = null;
+
+    public function __construct(mysqli $link)
+    {
+        $this->link = $link;
+    }
+
+    public function begin(): void
+    {
+        mysqli_begin_transaction($this->link);
+    }
+
+    /** @param array<int,mixed> $params */
+    public function insert(string $sql, string $types, array $params): void
+    {
+        if ($this->statement === null) {
+            $this->statement = mysqli_prepare($this->link, $sql);
+        }
+        mysqli_stmt_bind_param($this->statement, $types, ...$params);
+        mysqli_stmt_execute($this->statement);
+    }
+
+    public function commit(): void
+    {
+        $this->close();
+        mysqli_commit($this->link);
+    }
+
+    public function rollback(): void
+    {
+        $this->close();
+        mysqli_rollback($this->link);
+    }
+
+    private function close(): void
+    {
+        if ($this->statement !== null) {
+            mysqli_stmt_close($this->statement);
+            $this->statement = null;
+        }
+    }
+}
+
+/**
  * Merge rows into the primary database's merged_rows table.
  *
  * One transaction for the whole request: a merge that half landed would leave a
@@ -251,66 +305,16 @@ function merge_rows(array $rows, ?string $run = null): array
         refuse(503, 'could not prepare the merged_rows table');
     }
 
-    $accepted = 0;
-    $keys = array();
-
-    mysqli_begin_transaction($link);
+    $writer = new MysqliMergeWriter($link);
+    $writer->begin();
     try {
-        $statement = mysqli_prepare(
-            $link,
-            'INSERT INTO merged_rows'
-            .            ' (key_sha256, source_table, source_db, seen_in, row_bytes, row_json, first_seen, last_seen, run_token)'
-            . ' VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?)'
-            . ' ON DUPLICATE KEY UPDATE'
-            . ' seen_in = GREATEST(seen_in, VALUES(seen_in)),'
-            . ' row_bytes = VALUES(row_bytes),'
-            . ' row_json = VALUES(row_json),'
-            . ' source_db = VALUES(source_db),'
-            . ' run_token = VALUES(run_token),'
-            . ' last_seen = UTC_TIMESTAMP()'
-        );
-
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                refuse(400, 'every row must be an object');
-            }
-            $table = isset($row['table']) ? (string) $row['table'] : '';
-            if (preg_match('/^[A-Za-z0-9_]{1,64}$/', $table) !== 1) {
-                refuse(400, 'row table name is not a plain identifier');
-            }
-            $values = isset($row['values']) && is_array($row['values']) ? $row['values'] : array();
-            if ($values === array()) {
-                refuse(400, 'a row without values describes nothing');
-            }
-            $database = isset($row['source_db']) ? (string) $row['source_db'] : DB_PRIMARY;
-            if (preg_match('/^[A-Za-z0-9_]{1,64}$/', $database) !== 1) {
-                refuse(400, 'row source_db is not a configured label');
-            }
-
-            $key = row_key($table, $values);
-            if (isset($row['key']) && !hash_equals($key, (string) $row['key'])) {
-                refuse(422, 'a row arrived under a key that does not describe it');
-            }
-
-            $json = json_encode($values, JSON_UNESCAPED_SLASHES);
-            if ($json === false) {
-                refuse(422, 'a row could not be encoded');
-            }
-
-            $seen = isset($row['seen']) ? max(1, min(1000, (int) $row['seen'])) : 1;
-            $bytes = strlen($json);
-
-            mysqli_stmt_bind_param($statement, 'sssiiss', $key, $table, $database, $seen, $bytes, $json, $run);
-            mysqli_stmt_execute($statement);
-
-            $accepted++;
-            $keys[$key] = true;
-        }
-
-        mysqli_stmt_close($statement);
-        mysqli_commit($link);
+        $result = merge_write($rows, $run, $writer, DB_PRIMARY);
+        $writer->commit();
+    } catch (MergeRefused $refused) {
+        $writer->rollback();
+        refuse($refused->status, $refused->getMessage());
     } catch (Throwable $exc) {
-        mysqli_rollback($link);
+        $writer->rollback();
         // Never the exception text: it can name tables and, on some drivers, the
         // connection. The caller gets a status, not a schema.
         refuse(500, 'the merge was refused by the database');
@@ -319,8 +323,8 @@ function merge_rows(array $rows, ?string $run = null): array
     return array(
         'action' => 'merge',
         'received' => count($rows),
-        'accepted' => $accepted,
-        'distinct' => count($keys),
+        'accepted' => $result['accepted'],
+        'distinct' => count($result['keys']),
         'on' => 1,
         'run_token' => $run,
         'merged' => merged_status($run),
