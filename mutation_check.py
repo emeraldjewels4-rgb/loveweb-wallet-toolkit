@@ -70,6 +70,13 @@ MUTATIONS: list[Mutation] = [
         "keys.php: drop JSON_PRESERVE_ZERO_FRACTION (1.0 collides with 1)",
     ),
     Mutation(
+        "test_merge_collect.py",
+        '    print("ALL CHECKS PASSED")',
+        '    print("  PASS  looks fine")\n    print("ALL CHECKS PASSED")',
+        "test_suite_output.py",
+        "a suite prints a PASS line outside check()",
+    ),
+    Mutation(
         "run_tests.py",
         '                "passed": row["passed"],',
         '                "passed": 0,',

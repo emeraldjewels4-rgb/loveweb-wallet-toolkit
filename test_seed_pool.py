@@ -335,7 +335,7 @@ def main() -> int:
         for label in FAILED:
             print(f"  - {label}")
         return 1
-    print("All seed_pool checks passed.")
+    print("ALL CHECKS PASSED")
     return 0
 
 

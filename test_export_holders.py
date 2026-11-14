@@ -386,7 +386,7 @@ def main() -> int:
         for label in FAILED:
             print(f"  - {label}")
         return 1
-    print("All export_holders checks passed.")
+    print("ALL CHECKS PASSED")
     return 0
 
 

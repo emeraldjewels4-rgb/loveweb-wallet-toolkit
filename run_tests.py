@@ -59,6 +59,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_token.py", "in-memory EVM"),
     ("test_run_tests.py", "the runner itself: what it counts, refuses and exits with"),
     ("test_compare_legs.py", "the CI leg comparator: identical legs pass, drift is named"),
+    ("test_suite_output.py", "every suite prints PASS only from check(), one summary"),
     ("mutation_check.py", "every named mutation must be caught by its suite"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
     # Last on purpose: it compares README's numbers against the counts above, and
