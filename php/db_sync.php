@@ -57,9 +57,33 @@ function sync_key(): ?string
     return $key === '' ? null : $key;
 }
 
-/** @return never */
+/** A refusal with a status, so a harness can catch what the route would answer. */
+final class SyncRefused extends RuntimeException
+{
+    public int $status;
+
+    public function __construct(int $code, string $message)
+    {
+        parent::__construct($message);
+        $this->status = $code;
+    }
+}
+
+/**
+ * Answer with a status and stop.
+ *
+ * The route exits, which is what a route should do. A harness that includes this
+ * file (defining SYNC_LIBRARY first, see the guard at the end) gets the status
+ * thrown instead, the same way merge.php's MergeRefused becomes a status: what
+ * the answer would be is data, and only the outermost caller ends the process.
+ *
+ * @return never
+ */
 function refuse(int $code, string $message): void
 {
+    if (defined('SYNC_LIBRARY')) {
+        throw new SyncRefused($code, $message);
+    }
     http_response_code($code);
     echo json_encode(array('error' => $message), JSON_UNESCAPED_SLASHES) . "\n";
     exit;
@@ -290,11 +314,14 @@ final class MysqliMergeWriter implements MergeWriter
  * @param string|null $run token naming this upload; stamped on every row it
  *                          writes, so the caller can prove "what I sent is
  *                          stored" without the table ever having to shrink
+ * @param mysqli|null $link the route passes nothing and gets the configured
+ *                          connection; a test passes a stub, which is the only
+ *                          way this runs with no MySQL and no host
  * @return array<string,mixed>
  */
-function merge_rows(array $rows, ?string $run = null): array
+function merge_rows(array $rows, ?string $run = null, ?mysqli $link = null): array
 {
-    $link = db();
+    $link = $link ?? db();
     if ($link === null) {
         refuse(503, 'database not reachable');
     }
@@ -327,7 +354,7 @@ function merge_rows(array $rows, ?string $run = null): array
         'distinct' => count($result['keys']),
         'on' => 1,
         'run_token' => $run,
-        'merged' => merged_status($run),
+        'merged' => merged_status($run, $link),
     );
 }
 
@@ -601,6 +628,14 @@ function database_report(): array
             'client' => defined('MYSQLI_CLIENT_SSL') ? mysqli_get_client_info() : null,
         ),
     );
+}
+
+// ---------------------------------------------------------------------------
+// The route itself. Everything above is functions, so a harness can include
+// this file for merge_rows() and never dispatch a request: SYNC_LIBRARY says
+// "I am the caller", refuse() then throws, and the include returns here.
+if (defined('SYNC_LIBRARY')) {
+    return;
 }
 
 $key = sync_key();

@@ -674,8 +674,11 @@ function cjd_status(): array
  *
  * @return array<string,mixed>
  */
-function merged_status(?string $run = null): array
+function merged_status(?string $run = null, ?mysqli $link = null): array
 {
+    // The merge passes the connection it just wrote to, so the summary describes
+    // the rows it committed rather than whatever a second lookup would return.
+    $link = $link ?? db();
     $status = array(
         'table' => 'merged_rows',
         'on' => 0,
@@ -688,7 +691,6 @@ function merged_status(?string $run = null): array
         'totals' => array('rows' => 0, 'bytes' => 0),
     );
 
-    $link = db();
     if ($link === null) {
         return $status;
     }
