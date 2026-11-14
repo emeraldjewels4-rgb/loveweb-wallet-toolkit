@@ -35,6 +35,7 @@ README = ROOT / "README.md"
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 SELF = Path(__file__).name
 AUDIT = "audit_test_checks.py"
+UNMEASURED = "mutation_check.py"
 
 FAILED: list[str] = []
 
@@ -62,6 +63,11 @@ def check(cond: bool, label: str) -> None:
 def reported_counts(names: list[str]) -> dict[str, int]:
     """Each suite's PASS count: from the enclosing run when it is on offer, else by running it.
 
+    mutation_check.py is the exception, and only when there is no handoff: asking it
+    for a count means running it, which copies the tree and runs *this* suite in the
+    copy, which asks it again. Standalone that never ends; under run_tests.py its
+    count arrives in RUN_TESTS_COUNTS and no suite is run here at all.
+
     Counting with run_tests' own PASS_LINE is deliberate -- the README quotes the
     numbers that table prints, so this has to use the same rule, all-check-PASSED
     summary line included in neither.
@@ -71,6 +77,8 @@ def reported_counts(names: list[str]) -> dict[str, int]:
     for name in names:
         if name in given:
             counts[name] = int(given[name])
+            continue
+        if name == UNMEASURED:
             continue
         done = subprocess.run(
             [sys.executable, name], cwd=str(ROOT), capture_output=True, text=True,
@@ -146,11 +154,18 @@ def main() -> int:
               "%s README %s vs %d" % (name, claim, count) for name, claim, count in wrong)))
 
     print("\n=== 3. the total is the sum of the parts ===")
-    total = sum(measured.values()) + claims.get(SELF, 0)
+    # mutation_check.py's count is only known when the enclosing run handed it
+    # over; standalone it is not measurable (see reported_counts) and is taken from
+    # the README, which the label says out loud rather than hiding.
+    unmeasured = 0 if UNMEASURED in measured else claims.get(UNMEASURED, 0)
+    total = sum(measured.values()) + claims.get(SELF, 0) + unmeasured
     stated_total = re.search(r"run_tests\.py\s+#[^\n]*?(\d+) checks", text)
     check(stated_total is not None and int(stated_total.group(1)) == total,
-          "README total %s equals the sum %d"
-          % (stated_total.group(1) if stated_total else "missing", total))
+          "README total %s equals the sum %d%s"
+          % (stated_total.group(1) if stated_total else "missing", total,
+             "" if not unmeasured else
+             " (%s's %d taken from the README: it cannot be measured from here)"
+             % (UNMEASURED, unmeasured)))
 
     print("\n=== 4. the call-site figure matches the auditor ===")
     sites = audited_call_sites()

@@ -32,7 +32,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TIMEOUT = 600
-SKIP = (".git", ".sandbox", "__pycache__", ".cloud-attachments", "*.pyc")
+# .git is copied on purpose: without it the git-dependent suites report fewer checks
+# in the copy (test_no_secrets 0 instead of 20, test_merge_shape 31 instead of 33),
+# and test_docs_counts would read that as the README being wrong.
+SKIP = (".sandbox", "__pycache__", ".cloud-attachments", "*.pyc")
 FAILED: list[str] = []
 
 
@@ -68,6 +71,29 @@ MUTATIONS: list[Mutation] = [
         "JSON_UNESCAPED_SLASHES",
         "test_row_key_parity.py",
         "keys.php: drop JSON_PRESERVE_ZERO_FRACTION (1.0 collides with 1)",
+    ),
+    Mutation(
+        "run_tests.py",
+        '        os.environ["RUN_TESTS_COUNTS"] = json.dumps(measured)',
+        "        pass",
+        "test_run_tests.py",
+        "run_tests: the RUN_TESTS_COUNTS handoff is never published",
+    ),
+    Mutation(
+        "run_tests.py",
+        '        if args.verbose:\n'
+        '            for line in lines:\n'
+        '                print(f"    {line}")',
+        "        if args.verbose:\n            pass",
+        "test_run_tests.py",
+        "run_tests: --verbose echoes nothing",
+    ),
+    Mutation(
+        "README.md",
+        "python test_token.py           # 162 checks",
+        "python test_token.py           # 161 checks",
+        "test_docs_counts.py",
+        "README: a per-suite count disagrees with what the suite reports",
     ),
     Mutation(
         "test_merge_collect.py",
