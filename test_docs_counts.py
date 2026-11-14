@@ -40,7 +40,12 @@ FAILED: list[str] = []
 
 WORDS = {word: value for value, word in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve "
-    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split())}
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+for tens_index, tens in enumerate("twenty thirty forty fifty sixty seventy eighty "
+                                  "ninety".split(), start=2):
+    WORDS[tens] = tens_index * 10
+    WORDS.update({f"{tens}-{unit}": tens_index * 10 + WORDS[unit]
+                  for unit in "one two three four five six seven eight nine".split()})
 
 
 def check(cond: bool, label: str) -> None:
@@ -157,7 +162,7 @@ def main() -> int:
 
     print("\n=== 5. the prose count of suites matches the list ===")
     # The sentence wraps, so the count and the word need not be on one line.
-    stated_word = re.search(r"runs the (\w+)\s+suites", text)
+    stated_word = re.search(r"runs the ([\w-]+)\s+suites", text)
     check(stated_word is not None and WORDS.get(stated_word.group(1).lower()) == len(suites),
           "README says %s suite(s), %d run"
           % (stated_word.group(1) if stated_word else "nothing", len(suites)))

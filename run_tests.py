@@ -55,6 +55,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_mint.py", "in-memory EVM"),
     ("test_token.py", "in-memory EVM"),
     ("test_run_tests.py", "the runner itself: what it counts, refuses and exits with"),
+    ("mutation_check.py", "every named mutation must be caught by its suite"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
     # Last on purpose: it compares README's numbers against the counts above, and
     # reads them from RUN_TESTS_COUNTS rather than running every suite again.
