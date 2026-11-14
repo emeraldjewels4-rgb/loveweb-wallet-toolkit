@@ -765,7 +765,7 @@ The four contract suites read `build/ProjectToken.json`, which the setup block i
 [Contributing](#contributing) builds; build it once per checkout.
 
 ```bash
-python run_tests.py            # everything below + the audit: 1109 checks
+python run_tests.py            # everything below + the audit: 1112 checks
 
 python test_no_secrets.py      # 20 checks
 python test_token.py           # 162 checks
@@ -789,7 +789,7 @@ python test_merge_rows.py      # 27 checks
 python test_run_tests.py       # 20 checks
 python test_compare_legs.py    # 10 checks
 python test_suite_output.py    # 7 checks
-python mutation_check.py       # 8 checks
+python mutation_check.py       # 11 checks
 python test_row_key_parity.py  # 34 checks
 python test_docs_counts.py     # 7 checks
 ```
@@ -866,7 +866,7 @@ That check has run: every leg installs the same **64 packages**, 3.11, 3.12 and
 3.13 to the identical set, and 3.14 differing in exactly one line --
 `coincurve==22.0.0` from `constraints-py3.14.txt`, built from source because no
 cp314 wheel is published -- with every leg passing every suite, and every leg
-reporting the same **1109** checks.
+reporting the same **1112** checks.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
 
