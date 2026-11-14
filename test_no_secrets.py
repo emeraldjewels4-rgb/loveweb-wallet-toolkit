@@ -183,14 +183,17 @@ def main() -> int:
         return finish()
 
     section("each detector catches what it is for")
+    # The samples are assembled from pieces, not written out: this file is itself
+    # tracked, so a literal sample would be a finding in the very scan that plants
+    # it. Nothing is exempted from the scan -- the file has to survive it.
     wif = sample_wif()
     samples = {
-        "PEM private key block": "-----BEGIN EC PRIVATE KEY-----\nMFECAQEw\n",
+        "PEM private key block": "-----BEGIN EC " + "PRIVATE KEY-----\nMFECAQEw\n",
         "WIF private key": f"key: {wif}",
         "extended private key": "xprv" + "A" * 107,
         "64-hex value near a key word": "private_key = " + "ab" * 32,
-        "credential-bearing DSN": "mysql://syncuser:hunter2@db.example/x",
-        "password literal": 'password = "correct horse battery"',
+        "credential-bearing DSN": "mysql" + "://syncuser:hunter2@db.example/x",
+        "password literal": "password = " + '"correct horse battery"',
     }
     for kind, sample in samples.items():
         found = [f[0] for f in scan_text(sample)]
@@ -200,7 +203,7 @@ def main() -> int:
     benign = {
         "a sha256 digest": "bytecode_sha256 = " + "cd" * 32,
         "a column name with a hash": "key_sha256 = row['key_sha256']",
-        "a placeholder password": 'password = "changeme"',
+        "a placeholder password": "password = " + '"changeme"',
         "a DSN without credentials": "mysql://db.example/toolkit",
         "an empty value": "password = None",
     }
