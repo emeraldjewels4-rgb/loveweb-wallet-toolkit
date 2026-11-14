@@ -45,10 +45,14 @@ header('X-Content-Type-Options: nosniff');
 /** Rows per table in one export. A cap, not a hope: the reply says when it bit. */
 const SYNC_ROW_CAP = 20000;
 
-/** The import key, if one was installed on the host. Never echoed. */
-function sync_key(): ?string
+/**
+ * The import key, if one was installed on the host. Never echoed.
+ *
+ * The path is a parameter so a probe can point at a key it wrote, or at one that
+ * is not there, without touching (or needing) the host's file.
+ */
+function sync_key(string $path): ?string
 {
-    $path = __DIR__ . '/import.key';
     if (!is_file($path) || !is_readable($path)) {
         return null;
     }
@@ -630,82 +634,113 @@ function database_report(): array
     );
 }
 
+/**
+ * Answer one request: the guard, then the action, then its payload.
+ *
+ * A function of what the request says rather than of PHP's superglobals, so the
+ * refusals -- no key installed, a wrong key, a GET where a merge would write, an
+ * empty or malformed body, more rows than one request may carry, an unknown
+ * action -- can be executed with no host and no request. The entry point at the
+ * bottom builds $request from the superglobals and prints what this returns.
+ *
+ * A refusal goes through refuse(), so under SYNC_LIBRARY it arrives as a
+ * SyncRefused carrying the status the route would have answered with.
+ *
+ * @param array{method?:string,query?:array<string,mixed>,header_key?:?string,body?:string} $request
+ * @param string|null $key_file where the installed key lives; null is php/import.key
+ * @param mysqli|null $link the merge's connection, when the caller has one
+ * @return array<string,mixed> the payload the route would serialise
+ */
+function sync_route(array $request, ?string $key_file = null, ?mysqli $link = null): array
+{
+    $key = sync_key($key_file ?? __DIR__ . '/import.key');
+    if ($key === null) {
+        refuse(503, 'sync disabled: no import.key on the host');
+    }
+
+    $query = isset($request['query']) && is_array($request['query']) ? $request['query'] : array();
+
+    $given = '';
+    if (isset($request['header_key'])) {
+        $given = (string) $request['header_key'];
+    } elseif (isset($query['key'])) {
+        $given = (string) $query['key'];
+    }
+    if (!hash_equals($key, $given)) {
+        refuse(403, 'forbidden');
+    }
+
+    $action = isset($query['action']) ? strtolower((string) $query['action']) : 'export';
+
+    if ($action === 'status') {
+        $run = isset($query['run']) ? (string) $query['run'] : null;
+        if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
+            refuse(400, 'run token is not a plain token');
+        }
+
+        return array('action' => 'status', 'merged' => merged_status($run, $link));
+    }
+
+    if ($action === 'report') {
+        return database_report();
+    }
+
+    if ($action === 'export') {
+        $cap = isset($query['limit']) ? (int) $query['limit'] : SYNC_ROW_CAP;
+
+        return export_all(max(1, min(50000, $cap)));
+    }
+
+    if ($action === 'merge') {
+        if ((string) ($request['method'] ?? 'GET') !== 'POST') {
+            refuse(405, 'merge is a POST: a GET that could write is a link that could write');
+        }
+
+        $body = isset($request['body']) ? (string) $request['body'] : '';
+        if ($body === '') {
+            refuse(400, 'an empty body has nothing to merge');
+        }
+
+        $payload = json_decode($body, true);
+        if (!is_array($payload) || !isset($payload['rows']) || !is_array($payload['rows'])) {
+            refuse(400, 'expected {"rows": [...]}');
+        }
+        if ($payload['rows'] === array()) {
+            refuse(400, 'no rows to merge');
+        }
+        if (count($payload['rows']) > 50000) {
+            refuse(413, 'too many rows for one request: split the batch');
+        }
+
+        $run = isset($payload['run']) ? (string) $payload['run'] : null;
+        if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
+            refuse(400, 'run token is not a plain token');
+        }
+
+        return merge_rows($payload['rows'], $run, $link);
+    }
+
+    refuse(400, 'unknown action; use export, merge, report or status');
+}
+
 // ---------------------------------------------------------------------------
-// The route itself. Everything above is functions, so a harness can include
-// this file for merge_rows() and never dispatch a request: SYNC_LIBRARY says
-// "I am the caller", refuse() then throws, and the include returns here.
+// The request. Everything above is functions, so a harness can include this
+// file and never dispatch: SYNC_LIBRARY says "I am the caller", refuse() then
+// throws, and the include returns here.
 if (defined('SYNC_LIBRARY')) {
     return;
 }
 
-$key = sync_key();
-if ($key === null) {
-    refuse(503, 'sync disabled: no import.key on the host');
-}
+$request = array(
+    'method' => isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET',
+    'query' => isset($_GET) && is_array($_GET) ? $_GET : array(),
+    'header_key' => isset($_SERVER['HTTP_X_IMPORT_KEY']) ? (string) $_SERVER['HTTP_X_IMPORT_KEY'] : null,
+    // Only a merge reads a body; reading php://input for anything else would
+    // consume it to no purpose.
+    'body' => strtolower((string) ($_GET['action'] ?? '')) === 'merge'
+        ? (string) file_get_contents('php://input')
+        : '',
+);
 
-$given = '';
-if (isset($_SERVER['HTTP_X_IMPORT_KEY'])) {
-    $given = (string) $_SERVER['HTTP_X_IMPORT_KEY'];
-} elseif (isset($_GET['key'])) {
-    $given = (string) $_GET['key'];
-}
-if (!hash_equals($key, $given)) {
-    refuse(403, 'forbidden');
-}
-
-$action = isset($_GET['action']) ? strtolower((string) $_GET['action']) : 'export';
-
-if ($action === 'status') {
-    $run = isset($_GET['run']) ? (string) $_GET['run'] : null;
-    if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
-        refuse(400, 'run token is not a plain token');
-    }
-
-    echo json_encode(array('action' => 'status', 'merged' => merged_status($run)), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit;
-}
-
-if ($action === 'report') {
-    echo json_encode(database_report(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit;
-}
-
-if ($action === 'export') {
-    $cap = isset($_GET['limit']) ? (int) $_GET['limit'] : SYNC_ROW_CAP;
-    $cap = max(1, min(50000, $cap));
-
-    echo json_encode(export_all($cap), JSON_UNESCAPED_SLASHES) . "\n";
-    exit;
-}
-
-if ($action === 'merge') {
-    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
-        refuse(405, 'merge is a POST: a GET that could write is a link that could write');
-    }
-
-    $body = (string) file_get_contents('php://input');
-    if ($body === '') {
-        refuse(400, 'an empty body has nothing to merge');
-    }
-
-    $payload = json_decode($body, true);
-    if (!is_array($payload) || !isset($payload['rows']) || !is_array($payload['rows'])) {
-        refuse(400, 'expected {"rows": [...]}');
-    }
-    if ($payload['rows'] === array()) {
-        refuse(400, 'no rows to merge');
-    }
-    if (count($payload['rows']) > 50000) {
-        refuse(413, 'too many rows for one request: split the batch');
-    }
-
-    $run = isset($payload['run']) ? (string) $payload['run'] : null;
-    if ($run !== null && preg_match('/^[A-Za-z0-9_-]{8,64}$/', $run) !== 1) {
-        refuse(400, 'run token is not a plain token');
-    }
-
-    echo json_encode(merge_rows($payload['rows'], $run), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit;
-}
-
-refuse(400, 'unknown action; use export, merge, report or status');
+echo json_encode(sync_route($request), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "
+";

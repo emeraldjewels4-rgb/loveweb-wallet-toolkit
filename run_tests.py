@@ -46,6 +46,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_merge_schema.py", "merged_rows SQL shapes agree, parsed without a database"),
     ("test_merge_rows.py", "the merge executed: bind types, upsert, refusals, no database"),
     ("test_merge_route.py", "the route executed: stub mysqli, statement, statuses"),
+    ("test_sync_route.py", "the dispatch executed: the guard, the body checks, 405/413"),
     ("test_row_key_parity.py", "PHP row_key() against the same formula in Python"),
     ("test_check_funding.py", "fake providers, no network"),
     ("test_watch_only.py", "zpub derivation against the BIP84 vectors"),
