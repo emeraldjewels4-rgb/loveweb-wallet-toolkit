@@ -171,15 +171,26 @@ function quote_identifier(string $name): string
  * more?" is answered by the database rather than assumed: a truncated table says
  * so in the reply instead of quietly exporting a prefix.
  *
+ * @param array<string,array{0:string,1:mysqli|null}>|null $databases label =>
+ *        [physical name, connection]. The route passes nothing and gets what the
+ *        config says; a probe passes its own, which is the only way this runs
+ *        with no host and no MySQL
  * @return array<string,mixed>
  */
-function export_all(int $cap): array
+function export_all(int $cap, ?array $databases = null): array
 {
+    if ($databases === null) {
+        $databases = array();
+        foreach (db_labels() as $label => $name) {
+            $databases[$label] = array($name, db_named($label));
+        }
+    }
+
     $tables = array();
     $rows = 0;
 
-    foreach (db_labels() as $label => $name) {
-        $link = db_named($label);
+    foreach ($databases as $label => $entry) {
+        [$name, $link] = $entry;
         if ($link === null) {
             $tables[] = array('database' => $label, 'table' => null, 'on' => 0, 'error' => 'not reachable');
             continue;

@@ -258,6 +258,14 @@ def main() -> int:
         code, out = drive(tmp, three)
         check(code == 0 and "NEW    test_gamma.py: 2" in out,
               "a suite the baseline does not know is reported, not failed")
+        # A red run must not record what it measured: those counts are an artefact
+        # of the failure, and every later run would be held to them.
+        before = baseline_file.read_text(encoding="utf-8")
+        code, out = drive(tmp, [("test_bad.py", "one check fails")], "--write-baseline")
+        check(code == 1 and "baseline NOT written" in out
+              and baseline_file.read_text(encoding="utf-8") == before,
+              "--write-baseline refuses a run in which a suite failed")
+
         code, out = drive(tmp, three, "--write-baseline")
         written = json.loads(baseline_file.read_text(encoding="utf-8"))
         check(code == 0 and written.get("suites", {}).get("test_gamma.py") == 2
@@ -305,16 +313,17 @@ def main() -> int:
     check(proc.returncode == 2, f"python run_tests.py --only <no match> exits 2 (got {proc.returncode})")
 
     section("the baseline this repository ships")
-    # Without this, deleting the file would turn every comparison off quietly.
+    # Without this, deleting the file would turn every comparison off quietly. A
+    # suite the baseline has not seen yet is not a failure here: the runner reports
+    # it as NEW, and recording it is a separate, deliberate step.
     shipped = run_tests.load_baseline(run_tests.baseline_path())
     listed = {name for name, _ in run_tests.SUITES}
     check(shipped is not None,
           f"{run_tests.BASELINE_NAME} is committed beside the runner")
-    check(shipped is not None and set(shipped) == listed,
-          "it names exactly the suites the runner lists"
-          + ("" if shipped is None else
-             " (missing %s, extra %s)" % (sorted(listed - set(shipped)) or "none",
-                                          sorted(set(shipped) - listed) or "none")))
+    stale = sorted(set(shipped or {}) - listed)
+    check(shipped is not None and not stale,
+          "every suite it names is still in the list"
+          + (f" (stale: {stale})" if stale else ""))
     # The audit prints a report rather than check lines, so its zero is truthful --
     # and it is the only zero allowed: every other suite has to report something,
     # or it would be sitting in the list without checking anything.

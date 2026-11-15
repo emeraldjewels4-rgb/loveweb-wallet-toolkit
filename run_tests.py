@@ -46,6 +46,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_merge_schema.py", "merged_rows SQL shapes agree, parsed without a database"),
     ("test_merge_rows.py", "the merge executed: bind types, upsert, refusals, no database"),
     ("test_merge_route.py", "the route executed: stub mysqli, statement, statuses"),
+    ("test_export.py", "the export executed: value encoding, the cap, what it skips"),
     ("test_sync_route.py", "the dispatch executed: the guard, the body checks, 405/413"),
     ("test_row_key_parity.py", "PHP row_key() against the same formula in Python"),
     ("test_check_funding.py", "fake providers, no network"),
@@ -286,7 +287,16 @@ def main(argv=None) -> int:
     drops: list[tuple[str, int, int]] = []
     gone: list[str] = []
     baseline: dict[str, int] = {}
-    if args.write_baseline:
+    red = [r for r in rows if r["rc"] != 0]
+    # A baseline records what a green run measured. Writing one from a red run
+    # records the counts a failure produced -- 31 instead of 32 because a check was
+    # failing, 4 instead of 11 because the harness could not run -- and then holds
+    # every later run to that.
+    if args.write_baseline and red:
+        print(f"\nbaseline NOT written: {len(red)} suite(s) failed, and a baseline")
+        print("  records a green run. Fix them, then record:")
+        print("  python run_tests.py --write-baseline")
+    elif args.write_baseline:
         write_baseline(measured, baseline_path())
         print(f"\nbaseline written: {len(measured)} suite(s), "
               f"{sum(measured.values())} checks -> {baseline_path().name}")
