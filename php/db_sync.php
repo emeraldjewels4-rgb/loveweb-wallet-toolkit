@@ -171,6 +171,13 @@ function quote_identifier(string $name): string
  * more?" is answered by the database rather than assumed: a truncated table says
  * so in the reply instead of quietly exporting a prefix.
  *
+ * The reply carries no `merged` block, deliberately. That block costs a COUNT, a
+ * GROUP BY and a full ordered scan of merged_rows to build, and this is the route
+ * that skips that table on purpose -- it is this route's own output, and exporting
+ * it would merge the previous merge. ?action=status answers the question, once, for
+ * whoever wants it; sync_database.py compares against that and never read the copy
+ * in an export.
+ *
  * @param array<string,array{0:string,1:mysqli|null}>|null $databases label =>
  *        [physical name, connection]. The route passes nothing and gets what the
  *        config says; a probe passes its own, which is the only way this runs
@@ -261,7 +268,6 @@ function export_all(int $cap, ?array $databases = null): array
         'cap' => $cap,
         'tables' => $tables,
         'rows' => $rows,
-        'merged' => merged_status(),
     );
 }
 

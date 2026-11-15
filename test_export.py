@@ -171,6 +171,14 @@ def main() -> int:
           "a neighbour with a table of the same name is exported: the skip is the "
           "primary's own output, not the name")
 
+    section("what the reply does not compute")
+    check("merged" not in capped,
+          "no merged status in an export: it costs a COUNT, a GROUP BY and a full "
+          "ordered scan of merged_rows, on the route that skips that table")
+    check(sorted(capped) == ["action", "cap", "generated_at", "rows", "tables"],
+          f"and its fields are exactly the export's own ({sorted(capped)}), so a "
+          "block creeping back fails here")
+
     section("a database that cannot be read")
     offline = entry(capped, "offline")
     check(offline.get("on") == 0 and offline.get("error") == "not reachable",
