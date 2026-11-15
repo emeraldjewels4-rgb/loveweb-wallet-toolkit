@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     section("the scan can see both kinds")
     # Two spot checks from opposite ends: a symbol a probe calls directly, and one
     # that only a caller's caller reaches.
-    for name in ("merge_write", "export_all", "sync_route"):
+    for name in ("merge_write", "export_page", "export_tables", "sync_route"):
         check(name in reached, f"{name} is reached (a probe calls it)")
     check("sync_key" in reached and "sync_key" not in named,
           "sync_key() is covered without being named: the dispatch refuses on it")

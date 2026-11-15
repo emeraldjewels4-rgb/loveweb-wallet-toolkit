@@ -5,7 +5,9 @@ declare(strict_types=1);
  * Take everything out of the databases on this host, and put the merged result
  * back into one table.
  *
- *   GET  db_sync.php?action=export&limit=20000   (read)   every table, every database
+ *   GET  db_sync.php?action=tables                 (read)   every table, no rows
+ *   GET  db_sync.php?action=export&table=t.t&after=K&limit=N (read)  one page of one
+ *                                                       table, ordered by its key
  *   POST db_sync.php?action=merge                (write)  rows -> merged_rows
  *   GET  db_sync.php?action=status[&run=token]   (read)   the table, or one upload
  *   GET  db_sync.php?action=report               (read)   what each database is running on
@@ -42,8 +44,11 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
-/** Rows per table in one export. A cap, not a hope: the reply says when it bit. */
-const SYNC_ROW_CAP = 20000;
+/** Rows per page of one table: about a megabyte of JSON, so a page stays a page. */
+const SYNC_PAGE_ROWS = 2000;
+
+/** The largest page this route will serve, however the caller asks. */
+const SYNC_PAGE_MAX = 20000;
 
 /**
  * The import key, if one was installed on the host. Never echoed.
@@ -165,111 +170,205 @@ function quote_identifier(string $name): string
 }
 
 /**
- * Every configured database, every table, and the rows in it.
+ * The databases the route exports, exactly as the config names them.
  *
- * The cap is applied per table and re-fetched as `cap + 1` rows, so "is there
- * more?" is answered by the database rather than assumed: a truncated table says
- * so in the reply instead of quietly exporting a prefix.
+ * A label is what a caller sees. The physical database name never travels in a
+ * query string, so a caller cannot ask for a database it was not given.
  *
- * The reply carries no `merged` block, deliberately. That block costs a COUNT, a
- * GROUP BY and a full ordered scan of merged_rows to build, and this is the route
- * that skips that table on purpose -- it is this route's own output, and exporting
- * it would merge the previous merge. ?action=status answers the question, once, for
- * whoever wants it; sync_database.py compares against that and never read the copy
- * in an export.
- *
- * @param array<string,array{0:string,1:mysqli|null}>|null $databases label =>
- *        [physical name, connection]. The route passes nothing and gets what the
- *        config says; a probe passes its own, which is the only way this runs
- *        with no host and no MySQL
- * @return array<string,mixed>
+ * @return array<string,array{0:string,1:mysqli|null}>
  */
-function export_all(int $cap, ?array $databases = null): array
+function configured_databases(): array
 {
-    if ($databases === null) {
-        $databases = array();
-        foreach (db_labels() as $label => $name) {
-            $databases[$label] = array($name, db_named($label));
-        }
+    $databases = array();
+    foreach (db_labels() as $label => $name) {
+        $databases[$label] = array($name, db_named($label));
     }
 
-    $tables = array();
-    $rows = 0;
+    return $databases;
+}
+
+/**
+ * The column a table is paged by: its single-column primary key, else `id`.
+ *
+ * A cursor has to be unique and ordered, and a primary key is the only column a
+ * database promises that for. Null means the table has neither, so it can only be
+ * read one page up to the cap -- which the reply says with `paged: false` instead
+ * of pretending the table was read whole.
+ */
+function cursor_column(mysqli $link, string $database, string $table): ?string
+{
+    $statement = mysqli_prepare(
+        $link,
+        'SELECT COLUMN_NAME FROM information_schema.COLUMNS'
+        . " WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_KEY = 'PRI'"
+        . ' ORDER BY ORDINAL_POSITION'
+    );
+    mysqli_stmt_bind_param($statement, 'ss', $database, $table);
+    mysqli_stmt_execute($statement);
+    $result = mysqli_stmt_get_result($statement);
+    $keys = array();
+    while ($row = mysqli_fetch_row($result)) {
+        $keys[] = (string) $row[0];
+    }
+    mysqli_stmt_close($statement);
+
+    if (count($keys) === 1) {
+        return $keys[0];
+    }
+
+    return in_array('id', column_names($link, $database, $table), true) ? 'id' : null;
+}
+
+/**
+ * Phase one: what there is to export.
+ *
+ * Every configured database, every table in it, its columns and the column a page
+ * of it is ordered by. No rows, so this reply is small however large the databases
+ * are, and a caller can ask for one table at a time from what it returns.
+ *
+ * @param array<string,array{0:string,1:mysqli|null}>|null $databases label =>
+ *        [physical name, connection], the way export_page() takes them
+ * @return array<string,mixed>
+ */
+function export_tables(?array $databases = null): array
+{
+    $databases = $databases === null ? configured_databases() : $databases;
+    $out = array('action' => 'tables', 'generated_at' => gmdate('c'), 'databases' => array());
 
     foreach ($databases as $label => $entry) {
         [$name, $link] = $entry;
+        $database = array('database' => $label, 'on' => 0, 'error' => 'not reachable', 'tables' => array());
         if ($link === null) {
-            $tables[] = array('database' => $label, 'table' => null, 'on' => 0, 'error' => 'not reachable');
+            $out['databases'][] = $database;
             continue;
         }
 
         try {
             $names = table_names($link, $name);
         } catch (Throwable $exc) {
-            $tables[] = array('database' => $label, 'table' => null, 'on' => 0, 'error' => 'connected, tables not readable');
+            $database['error'] = 'connected, tables not readable';
+            $out['databases'][] = $database;
             continue;
         }
 
+        $database['on'] = 1;
+        $database['error'] = null;
         foreach ($names as $table) {
             // The merged table is this route's own output. Exporting it would
             // make every run merge its own previous merge, so it is skipped.
             if ($label === DB_PRIMARY && $table === 'merged_rows') {
                 continue;
             }
-
-            $entry = array(
-                'database' => $label,
+            $database['tables'][] = array(
                 'table' => $table,
-                'on' => 1,
-                'columns' => array(),
-                'rows' => array(),
-                'truncated' => false,
-                'error' => null,
+                'columns' => column_names($link, $name, $table),
+                'cursor' => cursor_column($link, $name, $table),
             );
-
-            try {
-                $entry['columns'] = column_names($link, $name, $table);
-                $result = mysqli_query($link, 'SELECT * FROM ' . quote_identifier($table) . ' LIMIT ' . ($cap + 1));
-                if ($result === false) {
-                    throw new RuntimeException('select refused');
-                }
-                $fetched = 0;
-                while ($assoc = mysqli_fetch_assoc($result)) {
-                    if ($fetched >= $cap) {
-                        $entry['truncated'] = true;
-                        break;
-                    }
-                    $fetched++;
-
-                    $values = array();
-                    foreach ($assoc as $column => $value) {
-                        $values[(string) $column] = encode_value($value);
-                    }
-                    $json = json_encode($values, JSON_UNESCAPED_SLASHES);
-                    $entry['rows'][] = array(
-                        'key' => row_key($table, $values),
-                        'bytes' => $json === false ? 0 : strlen($json),
-                        'values' => $values,
-                    );
-                }
-                mysqli_free_result($result);
-                $rows += $fetched;
-            } catch (Throwable $exc) {
-                $entry['error'] = 'rows not readable';
-            }
-
-            $tables[] = $entry;
         }
+        $out['databases'][] = $database;
+    }
+
+    return $out;
+}
+
+/**
+ * Phase two: one page of one table, ordered by its cursor column.
+ *
+ * `after` is the last key the previous page returned, so the cap cannot lose a
+ * row: the walk resumes where it stopped instead of starting again from the top.
+ * `more` and `next` say the same thing -- another page exists, and the value to
+ * ask for it with -- so a caller that wants the whole table loops until `next` is
+ * null, one bounded request at a time.
+ *
+ * A table with no cursor column cannot be walked that way: it is read once, up to
+ * the cap, and reports `paged: false`, which is the one case where a caller still
+ * has to be told there is more rather than being handed the rest.
+ *
+ * @param array<string,array{0:string,1:mysqli|null}>|null $databases label =>
+ *        [physical name, connection]. The route passes nothing and gets what the
+ *        config says; a probe passes its own, which is the only way this runs with
+ *        no host and no MySQL
+ * @return array<string,mixed>
+ */
+function export_page(string $label, string $table, ?string $after, int $cap, ?array $databases = null): array
+{
+    $databases = $databases === null ? configured_databases() : $databases;
+    if (!isset($databases[$label])) {
+        refuse(404, 'no database by that name in this configuration');
+    }
+
+    [$name, $link] = $databases[$label];
+    if ($link === null) {
+        refuse(503, 'that database is not reachable');
+    }
+
+    // Names come from information_schema, never from the query string: `table`
+    // is matched against what the database says it has, so it cannot carry SQL.
+    $columns = column_names($link, $name, $table);
+    if ($columns === array()) {
+        refuse(404, 'no table by that name in that database');
+    }
+    $cursor = cursor_column($link, $name, $table);
+
+    $sql = 'SELECT * FROM ' . quote_identifier($table);
+    if ($cursor !== null) {
+        if ($after !== null && $after !== '') {
+            $sql .= ' WHERE ' . quote_identifier($cursor)
+                . " > '" . mysqli_real_escape_string($link, $after) . "'";
+        }
+        $sql .= ' ORDER BY ' . quote_identifier($cursor) . ' ASC';
+    }
+    $sql .= ' LIMIT ' . ($cap + 1);
+
+    $rows = array();
+    $next = null;
+    $more = false;
+    $result = mysqli_query($link, $sql);
+    if ($result === false) {
+        refuse(503, 'that table is not readable');
+    }
+    while ($assoc = mysqli_fetch_assoc($result)) {
+        if (count($rows) >= $cap) {
+            $more = true;
+            break;
+        }
+        $values = array();
+        foreach ($assoc as $column => $value) {
+            $values[(string) $column] = encode_value($value);
+        }
+        $json = json_encode($values, JSON_UNESCAPED_SLASHES);
+        $rows[] = array(
+            'key' => row_key($table, $values),
+            'bytes' => $json === false ? 0 : strlen($json),
+            'values' => $values,
+        );
+        $next = $cursor === null ? null : (string) ($assoc[$cursor] ?? '');
+    }
+    mysqli_free_result($result);
+
+    if ($cursor === null) {
+        // No cursor, so `more` can be true with nothing to continue from: the page
+        // says the table is bigger than this rather than pretending it was all of
+        // it. `next` stays null, because there is no key to ask with.
+        $next = null;
     }
 
     return array(
         'action' => 'export',
-        'generated_at' => gmdate('c'),
+        'paged' => $cursor !== null,
+        'database' => $label,
+        'table' => $table,
+        'columns' => $columns,
+        'cursor' => $cursor,
+        'after' => $after,
+        'next' => $more ? $next : null,
+        'more' => $more,
         'cap' => $cap,
-        'tables' => $tables,
         'rows' => $rows,
+        'generated_at' => gmdate('c'),
     );
 }
+
 
 /**
  * The real writer: one prepared statement for the whole merge, and the
@@ -702,10 +801,28 @@ function sync_route(array $request, ?string $key_file = null, ?mysqli $link = nu
         return database_report();
     }
 
-    if ($action === 'export') {
-        $cap = isset($query['limit']) ? (int) $query['limit'] : SYNC_ROW_CAP;
+    if ($action === 'tables') {
+        return export_tables();
+    }
 
-        return export_all(max(1, min(50000, $cap)));
+    if ($action === 'export') {
+        $cap = isset($query['limit']) ? (int) $query['limit'] : SYNC_PAGE_ROWS;
+        $named = isset($query['table']) ? trim((string) $query['table']) : '';
+        if ($named === '') {
+            // Nothing is read until a table is named: the reply that used to hold
+            // every row of every table is the one that ran out of memory.
+            refuse(400, 'export is one table at a time: ?action=tables lists them, '
+                . 'then &table=<database>.<table>');
+        }
+        $parts = explode('.', $named, 2);
+        if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+            refuse(400, 'name the table as <database>.<table>, the way ?action=tables reports it');
+        }
+        $after = isset($query['after']) && (string) $query['after'] !== ''
+            ? (string) $query['after']
+            : null;
+
+        return export_page($parts[0], $parts[1], $after, max(1, min(SYNC_PAGE_MAX, $cap)));
     }
 
     if ($action === 'merge') {
@@ -737,7 +854,7 @@ function sync_route(array $request, ?string $key_file = null, ?mysqli $link = nu
         return merge_rows($payload['rows'], $run, $link);
     }
 
-    refuse(400, 'unknown action; use export, merge, report or status');
+    refuse(400, 'unknown action; use tables, export, merge, report or status');
 }
 
 // ---------------------------------------------------------------------------
@@ -760,7 +877,7 @@ if (defined('SYNC_LIBRARY')) {
  * alone in both, so a URL in a row is not escaped back at whoever asked.
  *
  * The per-row `bytes` count is the length of that row's own compact encoding,
- * computed in export_all() and untouched here: nothing measures this envelope.
+ * computed in export_page() and untouched here: nothing measures this envelope.
  */
 function sync_respond(array $payload): string
 {

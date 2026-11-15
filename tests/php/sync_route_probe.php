@@ -131,6 +131,21 @@ $cases = array(
         $keyFile
     ),
 
+    // The one request that used to hold every row of every table. It refuses
+    // before reading anything: the reply that named no table is the reply that ran
+    // out of memory, and the listing is where a caller starts now.
+    'export without a table' => route_case(
+        request(array('method' => 'GET', 'query' => array('action' => 'export'))),
+        $keyFile
+    ),
+    'export naming a table badly' => route_case(
+        request(array(
+            'method' => 'GET',
+            'query' => array('action' => 'export', 'table' => 'no-dot-here'),
+        )),
+        $keyFile
+    ),
+
     // And the action that does write, so the refusals above are refusals.
     'merge' => route_case(request(), $keyFile),
     'merge without a run token' => route_case(

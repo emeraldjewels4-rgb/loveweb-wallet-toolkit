@@ -219,6 +219,41 @@ class mysqli
         );
     }
 
+    /**
+     * A registered answer with the paging a page query asks for applied.
+     *
+     * `WHERE `key` > 'v' ORDER BY `key` LIMIT n` is the whole of the cursor, so a
+     * stub that ignored it could only ever answer page one -- the walk would look
+     * correct while never being tested past its first request.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     * @return array<int,array<string,mixed>>
+     */
+    private function paged(array $rows, string $sql): array
+    {
+        if (preg_match("/ WHERE `([^`]+)` > '((?:[^'\\\\]|\\\\\\.)*)'/", $sql, $match) === 1) {
+            $column = $match[1];
+            $after = (string) stripslashes($match[2]);
+            $rows = array_values(array_filter(
+                $rows,
+                static fn (array $row): bool => (string) ($row[$column] ?? '') > $after
+            ));
+        }
+        if (preg_match('/ ORDER BY `([^`]+)` ASC/', $sql, $match) === 1) {
+            $column = $match[1];
+            usort(
+                $rows,
+                static fn (array $a, array $b): int
+                    => strnatcmp((string) ($a[$column] ?? ''), (string) ($b[$column] ?? ''))
+            );
+        }
+        if (preg_match('/ LIMIT (\d+)$/', $sql, $match) === 1) {
+            $rows = array_slice($rows, 0, (int) $match[1]);
+        }
+
+        return $rows;
+    }
+
     /** The rows a statement's WHERE names, or all of them when it names none. */
     private function matching(string $sql): array
     {
@@ -244,7 +279,7 @@ class mysqli
         }
         $registered = $this->result_for($sql);
         if ($registered !== null) {
-            return $registered;
+            return new StubResult($this->paged($registered->rows, $sql));
         }
 
         if (str_starts_with($sql, 'CREATE TABLE')) {

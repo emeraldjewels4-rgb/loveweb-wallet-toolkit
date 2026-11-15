@@ -4,20 +4,25 @@
     python sync_database.py                  # download, merge, upload, verify
     python sync_database.py --dry-run         # download and merge locally, send nothing
     python sync_database.py --no-upload       # use the routes already on the host
-    python sync_database.py --limit 5000      # rows per table in one export
-    python sync_database.py --allow-truncated # merge a table the cap cut short
+    python sync_database.py --limit 5000      # rows per page of one table
+    python sync_database.py --allow-truncated # merge a keyless table's first page
 
 Download
     php/db_sync.php?action=export reads every table of every database named in
     php/config.local.php -- the primary first, then the SELECT-only neighbours --
     and returns the rows as JSON. That path writes nothing.
 
-    It caps each table at --limit rows and marks a table `truncated` when the cap
-    bit. That is a prefix of the table, and the digest check cannot notice it --
-    it compares the rows that were sent against the rows that were stored, both
-    true, while the rows past the cap were never in the run at all. So the run
-    stops and names the table: raise --limit (the host allows 50,000 per table per
-    request), or pass --allow-truncated to merge what came and say so.
+    It is two phases: ?action=tables says what there is and which column a page of
+    each table is ordered by, then one request per page carries a cursor. A table
+    larger than a page is walked to the end -- the page size bounds a request, not
+    the export -- because each page resumes from the last key the previous one
+    returned instead of starting again.
+
+    A table with no primary key and no id column cannot be walked. It is read once,
+    and if the page says there was more the run stops and names it rather than
+    merging a prefix: the digest check cannot notice, since it compares the rows
+    that were sent against the rows that were stored, and both are true. Pass
+    --allow-truncated to merge what came and say so.
 
 Merge
     Rows are merged on the key db_sync.php computed for them, so the same row
@@ -51,6 +56,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -145,21 +151,72 @@ def call(url, key, payload=None):
         sys.exit("%s did not answer with JSON: %s" % (url, body[:200]))
 
 
-def capped_tables(export):
-    """Tables the export's row cap cut short, as [(database.table, rows exported)].
+def walk_export(fetch, listing, page_size):
+    """Every page of every table, assembled into the document collect() merges.
 
-    A capped table is a prefix of itself, and merging one is not wrong so much as
-    incomplete: the digest verification would still pass, because it checks the
-    rows that were sent against the rows that were stored. What it cannot check is
-    the rows that never left the host, and a run that says "verified end to end"
-    after merging 20,000 of 200,000 rows has said something it did not do.
+    `listing` is ?action=tables: what there is, and which column a page of it is
+    ordered by. `fetch(label, table, after)` asks the host for one page and is the
+    only part that touches the network, which is why this can be run against
+    recorded pages.
+
+    A table with a cursor is walked until the host says there is no more, so a
+    table larger than a page is read whole -- the page size stops being a limit on
+    the export and becomes a size per request. A table with no cursor (no primary
+    key, no id) cannot be walked: it is read once and marked truncated when the
+    page says there was more, which is the one case that still loses rows and the
+    reason --allow-truncated still exists.
+
+    Returns (document, capped) where capped names those tables as
+    (database.table, rows read).
     """
+    document = {"tables": [], "rows": 0}
     capped = []
-    for table in export.get("tables") or []:
-        if table.get("truncated"):
-            capped.append(("%s.%s" % (table.get("database"), table.get("table")),
-                           len(table.get("rows") or [])))
-    return capped
+
+    for database in listing.get("databases") or []:
+        label = database.get("database")
+        if not database.get("on") or database.get("error"):
+            document["tables"].append({
+                "database": label,
+                "table": None,
+                "on": 0,
+                "error": database.get("error") or "not readable",
+                "rows": [],
+                "truncated": False,
+            })
+            continue
+
+        for entry in database.get("tables") or []:
+            table = entry.get("table")
+            cursor = entry.get("cursor")
+            rows = []
+            after = None
+            more = False
+            while True:
+                page = fetch(label, table, after)
+                rows.extend(page.get("rows") or [])
+                more = bool(page.get("more"))
+                after = page.get("next")
+                if not more or not cursor:
+                    break
+                if after is None:
+                    # The reply that would silently truncate: "there is more" with
+                    # nothing to ask for next. Named rather than looping forever.
+                    raise ValueError("%s.%s says there is more but gave no cursor to "
+                                     "continue from" % (label, table))
+
+            if more:
+                capped.append(("%s.%s" % (label, table), len(rows)))
+            document["tables"].append({
+                "database": label,
+                "table": table,
+                "on": 1,
+                "error": None,
+                "rows": rows,
+                "truncated": more,
+            })
+            document["rows"] += len(rows)
+
+    return document, capped
 
 
 def collect(export):
@@ -341,8 +398,8 @@ def batches(rows, limit=BATCH_BYTES):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--limit", type=int, default=20000,
-                        help="rows per table in one export (default 20000)")
+    parser.add_argument("--limit", type=int, default=2000,
+                        help="rows per page of one table (default 2000)")
     parser.add_argument("--no-upload", action="store_true",
                         help="use the routes already on the host")
     parser.add_argument("--dry-run", action="store_true",
@@ -372,20 +429,33 @@ def main():
                 sys.exit("missing %s" % (PHP / name).relative_to(ROOT))
             upload(name, dry_run=args.dry_run)
 
-    cap = max(1, min(50000, args.limit))
-    export = call("%s?action=export&limit=%d" % (SYNC_URL, cap), key)
+    cap = max(1, min(20000, args.limit))
+
+    # Phase one, then one page at a time. `after` is the last key the previous page
+    # returned, so the page size bounds a request rather than the export.
+    listing = call(SYNC_URL + "?action=tables", key)
+
+    def fetch(label, table, after):
+        url = "%s?action=export&table=%s.%s&limit=%d" % (
+            SYNC_URL, urllib.parse.quote(str(label)), urllib.parse.quote(str(table)), cap)
+        if after is not None:
+            url += "&after=" + urllib.parse.quote(str(after))
+
+        return call(url, key)
+
+    export, capped = walk_export(fetch, listing, cap)
 
     # Before anything is merged, and before the snapshot is overwritten with a
-    # prefix: a capped table means the export is not the whole picture.
-    capped = capped_tables(export)
+    # prefix: a table that could not be walked means the export is not the whole
+    # picture.
     if capped:
         for name, rows in capped:
             print("  export: %s is truncated: %d row(s) came back, the table holds more"
                   % (name, rows))
         if not args.allow_truncated:
-            print("  export: refusing to merge a prefix of %d table(s): raise --limit "
-                  "(the host allows 50,000 per table per request) or pass "
-                  "--allow-truncated to merge what came" % len(capped))
+            print("  export: refusing to merge a prefix of %d table(s): those tables "
+                  "have no key to page by, so raise --limit (the host allows 20,000 "
+                  "per page) or pass --allow-truncated to merge what came" % len(capped))
             sys.exit(1)
         print("  export: merging a prefix anyway (--allow-truncated); the rows past "
               "the cap are not in this run")
