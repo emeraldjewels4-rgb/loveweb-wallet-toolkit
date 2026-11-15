@@ -65,6 +65,7 @@ SUITES: list[tuple[str, str]] = [
     ("test_suite_output.py", "every suite prints PASS only from check(), one summary"),
     ("test_php_surface.py", "which functions in php/ no test has ever named"),
     ("test_sync_client.py", "the export reply is compact; the client still parses it"),
+    ("test_truncated_export.py", "a capped export refuses to merge as a prefix"),
     ("mutation_check.py", "every named mutation must be caught by its suite"),
     ("audit_test_checks.py", "check-order audit (no suite of its own)"),
     # Last on purpose: it compares README's numbers against the counts above, and
