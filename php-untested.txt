@@ -1,0 +1,33 @@
+# Functions, classes, interfaces and traits in php/ that no probe or suite
+# names, and that nothing a test names can reach either -- the surface where a
+# bug is found by a user instead of by CI.
+#
+# test_php_surface.py fails when a symbol is here and covered (the note is
+# stale) and when a symbol is covered by nothing and missing from here (it just
+# landed untested). Rewrite deliberately:
+#
+#     python test_php_surface.py --write-allowlist
+
+Broadcaster  # broadcast.php's send loop; only the file journal is exercised
+DbJournal  # db.php's journal; broadcast.php's file journal is what the tests use
+JsonRpc  # chain.php's RPC client; no suite talks to a node
+Outcome  # broadcast.php's per-send result
+RpcError  # chain.php's RPC failure type
+Wei  # chain.php's unit conversion
+bit  # view helper, duplicated in index.php and chain.php
+chain_gateway  # chain.php: hosts grouped by name pattern
+chain_row  # chain.php: the stored connection row
+chain_seed  # chain.php: writing that row
+chain_status  # chain.php's state; reads a live database
+cjd_key  # cjd_store.php's key check
+cjd_status  # db.php: the stored file's metadata
+db_default_label  # db.php: the catch-all domain binding
+db_grants  # db.php: SHOW GRANTS, parsed
+db_overview  # db.php: per-database tables and counts
+db_status  # db.php: configured / connected / has its table
+domain_map  # db.php: domain -> database bindings
+domain_synergy  # db.php: every binding as one bit vector
+ensure_chain_table  # db.php: CREATE TABLE for chain_connections
+ensure_cjd_table  # db.php: CREATE TABLE for cjd_source
+ensure_schema  # db.php: CREATE TABLE for broadcast_journal
+h  # view helper, duplicated in index.php and chain.php

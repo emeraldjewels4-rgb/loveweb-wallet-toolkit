@@ -22,6 +22,7 @@
     "test_mint.py": 105,
     "test_no_secrets.py": 20,
     "test_payment_request.py": 99,
+    "test_php_surface.py": 17,
     "test_row_key_parity.py": 34,
     "test_run_tests.py": 33,
     "test_seed_pool.py": 39,
