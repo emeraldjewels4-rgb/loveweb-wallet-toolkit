@@ -141,6 +141,67 @@ def count(lines: list[str]) -> tuple[int, int]:
     return passed, failed
 
 
+BASELINE_NAME = "counts-baseline.json"
+
+
+def baseline_path() -> Path:
+    """The committed baseline, beside this file so a copy of the tree carries one."""
+    return ROOT / BASELINE_NAME
+
+
+def load_baseline(path: Path) -> dict[str, int] | None:
+    """Suite name -> the count it last reported, or None when there is no file.
+
+    A baseline that will not parse is reported and treated as absent: skipping the
+    comparison without saying so is the failure this exists to catch.
+    """
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {str(name): int(count) for name, count in payload["suites"].items()}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        print(f"  BASELINE  {path.name} cannot be read ({exc}); counts not compared")
+        return None
+
+
+def baseline_report(measured: dict[str, int], baseline: dict[str, int],
+                    full: bool) -> dict[str, list]:
+    """What moved, in the four ways a count can: down, up, new, gone.
+
+    `gone` only counts on a full run: under --only or --fail-fast the suites that
+    did not run are the ones nobody asked for, not ones that disappeared.
+    """
+    return {
+        "drops": sorted((name, baseline[name], count) for name, count in measured.items()
+                        if name in baseline and count < baseline[name]),
+        "rises": sorted((name, baseline[name], count) for name, count in measured.items()
+                        if name in baseline and count > baseline[name]),
+        "added": sorted(name for name in measured if name not in baseline),
+        "gone": sorted(name for name in baseline if name not in measured) if full else [],
+    }
+
+
+def write_baseline(measured: dict[str, int], path: Path) -> None:
+    """Record what this run measured as the counts every later run is held to."""
+    payload = {"version": 1,
+               "suites": {name: measured[name] for name in sorted(measured)}}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def report_baseline(drops: list[tuple[str, int, int]], gone: list[str],
+                   baseline: dict[str, int]) -> None:
+    """Say which suites stopped checking things, and how to accept that on purpose."""
+    print(f"\n{len(drops) + len(gone)} SUITE(S) BELOW THE BASELINE:")
+    for name, was, now in drops:
+        print(f"  - {name}: {was} -> {now}")
+    for name in gone:
+        print(f"  - {name}: {baseline[name]} -> not run at all")
+    print("  a suite that checks fewer things can still exit 0, so this is what")
+    print("  notices. If the drop is intended, record it:")
+    print("  python run_tests.py --write-baseline")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Run every test suite plus the check-order audit.",
@@ -156,6 +217,8 @@ def main(argv=None) -> int:
                         help="per-suite timeout in seconds (default 900)")
     parser.add_argument("--json", metavar="PATH",
                         help="also write the per-suite counts and timings to PATH")
+    parser.add_argument("--write-baseline", action="store_true",
+                        help="record this run's counts as the new counts-baseline.json")
     args = parser.parse_args(argv)
 
     selected = [(p, d) for p, d in SUITES
@@ -217,6 +280,39 @@ def main(argv=None) -> int:
         write_json(args.json, rows, total_pass, total_fail, total_seconds,
                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_all)),
                    len(SUITES))
+    # The counts this run measured, against the counts it last measured -- not
+    # against prose somebody has to remember to edit. A suite that silently stops
+    # checking things exits 0 either way; this is what notices.
+    drops: list[tuple[str, int, int]] = []
+    gone: list[str] = []
+    baseline: dict[str, int] = {}
+    if args.write_baseline:
+        write_baseline(measured, baseline_path())
+        print(f"\nbaseline written: {len(measured)} suite(s), "
+              f"{sum(measured.values())} checks -> {baseline_path().name}")
+    else:
+        baseline = load_baseline(baseline_path())
+        if baseline is None:
+            print(f"\nno {baseline_path().name} under {ROOT}: counts not compared")
+        else:
+            moved = baseline_report(measured, baseline,
+                                    full=not args.only and not args.fail_fast)
+            drops = moved["drops"]
+            gone = moved["gone"]
+            if any(moved.values()):
+                print(f"\nCOUNTS AGAINST {baseline_path().name}")
+                for name, was, now in moved["rises"]:
+                    print(f"  ABOVE  {name}: {was} -> {now}"
+                          f"  (record with --write-baseline)")
+                for name in moved["added"]:
+                    print(f"  NEW    {name}: {measured[name]}"
+                          f"  (record with --write-baseline)")
+                for name in moved["gone"]:
+                    print(f"  GONE   {name}: baseline says {baseline[name]}"
+                          f", this run did not include it")
+            else:
+                print(f"\ncounts as the baseline has them: {len(measured)} suite(s)")
+
     failed_suites = [r for r in rows if r["rc"] != 0]
     skipped = len(SUITES) - len(rows)
     print("-" * 78)
@@ -236,6 +332,12 @@ def main(argv=None) -> int:
             for line in tail:
                 print(f"  {line}" if line.strip() else "")
             print(f"  re-run alone: python {r['name']}")
+        if drops or gone:
+            report_baseline(drops, gone, baseline)
+        return 1
+
+    if drops or gone:
+        report_baseline(drops, gone, baseline)
         return 1
 
     print(f"\nALL SUITES PASSED ({total_pass} checks, {len(rows)} suite(s), "
