@@ -742,6 +742,26 @@ if (defined('SYNC_LIBRARY')) {
     return;
 }
 
+/**
+ * The bytes the route writes: one JSON document per request, pretty-printed.
+ *
+ * Readable at a glance is why a refusal or a report can be read without a
+ * formatter, and it costs a reader nothing. Slashes are left alone so a path in
+ * a row is not escaped back at whoever asked.
+ *
+ * The export envelope changed from compact to pretty when the dispatch was
+ * factored out, so its shape is a function now rather than an echo nobody could
+ * run: tests/php/export_probe.php puts an export through it and
+ * test_sync_client.py feeds the result to sync_database.py, which parses it and
+ * merges the same rows either way. A row's own `bytes` count is the length of
+ * that row's compact encoding, computed in export_all() and untouched here --
+ * nothing measures this envelope.
+ */
+function sync_respond(array $payload): string
+{
+    return json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+}
+
 $request = array(
     'method' => isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET',
     'query' => isset($_GET) && is_array($_GET) ? $_GET : array(),
@@ -753,5 +773,4 @@ $request = array(
         : '',
 );
 
-echo json_encode(sync_route($request), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "
-";
+echo sync_respond(sync_route($request));

@@ -109,6 +109,8 @@ The account has four databases, so `config.local.php` names them all: `name` is 
 | `GET ?action=status[&run=TOKEN]` | Row count, bytes, digest and per-source-table counts of `merged_rows` -- for one upload's rows when `run` is given, for the whole table when it is not. `totals` always covers the whole table. |
 | `GET ?action=report` | Read-only survey of every database: server version and defaults, each table's engine and collation, the privileges `SHOW GRANTS` reports, TLS, and the limits that bite (packet size, `sql_mode`, `wait_timeout`). |
 
+Every reply is one JSON document, pretty-printed with slashes left alone (`sync_respond()`). `?action=export` was compact until the dispatch was factored into `sync_route()` and the echo became shared, which is exactly the kind of change that breaks a client without touching a line of it. The envelope is a function now, so it can be run: `test_sync_client.py` hands the reply the route would write to `sync_database.py`'s own `collect()`, `digest()` and `payload_rows()` and asserts the merged rows, the digest and the upload body come out identical whether those bytes were pretty or compact. The one length in the reply -- each row's `bytes`, the length of that row's own compact encoding -- is computed in `export_all()` and the client never reads it, so the envelope's size is nobody's input.
+
 `sync_database.py` (repository root) drives all three:
 
     python sync_database.py                  # download, merge, upload, verify
