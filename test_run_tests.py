@@ -219,6 +219,59 @@ def main() -> int:
         check(code == 1 and failed_rows.get("failed_checks") == 1,
               "and a failing run still writes the file, which CI uploads")
 
+        section("the counts baseline")
+        # The numbers a run is held to live in a file, not in prose somebody has to
+        # remember to edit: a suite that silently stops checking things still exits 0.
+        baseline_file = tmp / run_tests.BASELINE_NAME
+        write(tmp, run_tests.BASELINE_NAME,
+              json.dumps({"version": 1, "suites": {"test_alpha.py": 3, "test_beta.py": 2}}))
+        code, out = drive(tmp, pair)
+        check(code == 1 and "1 SUITE(S) BELOW THE BASELINE" in out
+              and "test_alpha.py: 3 -> 2" in out,
+              "a suite below the baseline fails the run, named with both counts")
+        check("ALL SUITES PASSED" not in out,
+              "and the run does not claim everything passed")
+
+        # A rise is reported, not punished: adding a check must not need the
+        # baseline edited in the same commit before the change can land.
+        write(tmp, run_tests.BASELINE_NAME,
+              json.dumps({"version": 1, "suites": {"test_alpha.py": 1, "test_beta.py": 2}}))
+        code, out = drive(tmp, pair)
+        check(code == 0 and "ABOVE  test_alpha.py: 1 -> 2" in out,
+              "a rise is reported and the run still exits 0")
+
+        # A suite that left the list is a drop to nothing, on a full run.
+        write(tmp, run_tests.BASELINE_NAME,
+              json.dumps({"version": 1, "suites": {"test_alpha.py": 2, "test_gone.py": 5}}))
+        code, out = drive(tmp, pair)
+        check(code == 1 and "test_gone.py: 5 -> not run at all" in out,
+              "a suite the baseline names but the run did not include is a drop too")
+        code, out = drive(tmp, pair, "--only", "alpha")
+        check(code == 0 and "not run at all" not in out,
+              "but not under --only, where not running the others was asked for")
+
+        # A new suite is not a drop; --write-baseline is how it gets recorded.
+        write(tmp, "test_gamma.py", PASSING)
+        write(tmp, run_tests.BASELINE_NAME,
+              json.dumps({"version": 1, "suites": {"test_alpha.py": 2, "test_beta.py": 2}}))
+        three = pair + [("test_gamma.py", "new")]
+        code, out = drive(tmp, three)
+        check(code == 0 and "NEW    test_gamma.py: 2" in out,
+              "a suite the baseline does not know is reported, not failed")
+        code, out = drive(tmp, three, "--write-baseline")
+        written = json.loads(baseline_file.read_text(encoding="utf-8"))
+        check(code == 0 and written.get("suites", {}).get("test_gamma.py") == 2
+              and written.get("suites", {}).get("test_alpha.py") == 2,
+              "--write-baseline records what this run measured")
+        code, out = drive(tmp, three)
+        check(code == 0 and "counts as the baseline has them" in out,
+              "and the next run is held to those numbers")
+
+        baseline_file.unlink()
+        code, out = drive(tmp, pair)
+        check(code == 0 and "counts not compared" in out,
+              "with no baseline file the run says so rather than passing silently")
+
         section("the handoff to the docs check")
         write(tmp, "test_probe.py", PROBE)
         drive(tmp, [("test_alpha.py", "2 checks"), ("test_beta.py", "2 more"),
@@ -250,6 +303,26 @@ def main() -> int:
         capture_output=True, text=True, timeout=120,
     )
     check(proc.returncode == 2, f"python run_tests.py --only <no match> exits 2 (got {proc.returncode})")
+
+    section("the baseline this repository ships")
+    # Without this, deleting the file would turn every comparison off quietly.
+    shipped = run_tests.load_baseline(run_tests.baseline_path())
+    listed = {name for name, _ in run_tests.SUITES}
+    check(shipped is not None,
+          f"{run_tests.BASELINE_NAME} is committed beside the runner")
+    check(shipped is not None and set(shipped) == listed,
+          "it names exactly the suites the runner lists"
+          + ("" if shipped is None else
+             " (missing %s, extra %s)" % (sorted(listed - set(shipped)) or "none",
+                                          sorted(set(shipped) - listed) or "none")))
+    # The audit prints a report rather than check lines, so its zero is truthful --
+    # and it is the only zero allowed: every other suite has to report something,
+    # or it would be sitting in the list without checking anything.
+    zeroes = sorted(name for name, count in (shipped or {}).items()
+                    if count == 0 and name != "audit_test_checks.py")
+    check(shipped is not None and not zeroes,
+          "and every suite but the audit records a positive number of checks"
+          + (f" (zero: {zeroes})" if zeroes else ""))
 
     print("\n" + "=" * 60)
     if FAILED:

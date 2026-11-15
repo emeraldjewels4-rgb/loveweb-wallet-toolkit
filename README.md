@@ -765,7 +765,7 @@ The four contract suites read `build/ProjectToken.json`, which the setup block i
 [Contributing](#contributing) builds; build it once per checkout.
 
 ```bash
-python run_tests.py            # everything below + the audit: 1168 checks
+python run_tests.py            # everything below + the audit: 1180 checks
 
 python test_no_secrets.py      # 20 checks
 python test_token.py           # 162 checks
@@ -788,7 +788,7 @@ python test_merge_schema.py    # 26 checks
 python test_merge_rows.py      # 27 checks
 python test_merge_route.py     # 34 checks
 python test_sync_route.py      # 22 checks
-python test_run_tests.py       # 20 checks
+python test_run_tests.py       # 32 checks
 python test_compare_legs.py    # 10 checks
 python test_suite_output.py    # 7 checks
 python mutation_check.py       # 11 checks
@@ -814,11 +814,24 @@ python run_tests.py                  # all of it
 python run_tests.py --only seed      # just the matching suite(s)
 python run_tests.py -v               # stream each suite's output
 python run_tests.py --fail-fast      # stop at the first failure
+python run_tests.py --write-baseline # accept the counts this run measured
 ```
 
 Counts come from lines that *begin* with `PASS`/`FAIL`. Grepping for `PASS`
 naively inflated every total by exactly one, because eleven of the suites end
 with the line `ALL CHECKS PASSED` -- which is a summary, not a check.
+
+**A count may rise, never fall.** [counts-baseline.json](counts-baseline.json)
+records what each suite last reported, and a run compares against it: a suite
+that drops is named with both numbers and fails the run, a suite that rises is
+reported (and recorded deliberately with `--write-baseline`), a suite the
+baseline knows but the run did not include fails it too -- a suite that leaves
+the list has dropped to nothing. The discrepancy this exists for is real: in a
+tree without `.git`, `test_no_secrets.py` reported 0 checks instead of 20 and
+the run still exited 0, because a suite that checks nothing prints no FAIL
+line. Prose could not catch that; a committed number can. The baseline is a
+file, not a claim, so `test_run_tests.py` also fails if it is deleted or stops
+naming every suite in the list.
 
 **CI runs exactly that command.** [.github/workflows/tests.yml](.github/workflows/tests.yml)
 runs `python run_tests.py` on every push to `main` and on every pull request
@@ -868,7 +881,7 @@ That check has run: every leg installs the same **64 packages**, 3.11, 3.12 and
 3.13 to the identical set, and 3.14 differing in exactly one line --
 `coincurve==22.0.0` from `constraints-py3.14.txt`, built from source because no
 cp314 wheel is published -- with every leg passing every suite, and every leg
-reporting the same **1168** checks.
+reporting the same **1180** checks.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
 
@@ -980,7 +993,7 @@ Three checks, because "the call sites look fine" is not evidence:
   the suite to name it in its summary and return 1. A suite that prints
   `ALL CHECKS PASSED` with a seeded failure fails this check.
 
-Result on the current tree: **1081 `check()` call sites, 0 swapped**, every guard
+Result on the current tree: **1093 `check()` call sites, 0 swapped**, every guard
   rejects a swapped call, and all seventeen suites report a seeded failure with exit 1.
 The auditor was itself verified by planting the exact original bug (an f-string
 condition with a boolean label) in a copy of a suite and confirming it is caught.
