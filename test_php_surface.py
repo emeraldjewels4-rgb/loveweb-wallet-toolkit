@@ -17,6 +17,10 @@ suite by name, and a recorded symbol that has since been covered fails too, so
 the file can only shrink deliberately. That makes "a new function landed with no
 test naming it" a red build instead of a discovery.
 
+This file is not part of the corpus it reads: naming a symbol in the checker is not
+naming it in a test, and the first version of this suite proved that by counting its
+own docstring as coverage for two symbols.
+
 Run it after adding a probe: `python test_php_surface.py --write-allowlist`.
 
     python test_php_surface.py
@@ -185,11 +189,14 @@ def main(argv: list[str] | None = None) -> int:
 
     section("the inventory")
     php_files = tracked("php/*.php")
-    test_files = tracked("tests/php/*.php", "test_*.py")
+    test_files = [path for path in tracked("tests/php/*.php", "test_*.py")
+                  if path.name != Path(__file__).name]
     check(len(php_files) >= 8,
           f"{len(php_files)} tracked php file(s) to scan")
     check(len(test_files) >= 4,
           f"{len(test_files)} probe(s) and suite(s) to look for names in")
+    check(not any(path.name == Path(__file__).name for path in test_files),
+          "this suite is not one of them: naming a symbol here is not testing it")
     if not php_files or not test_files:
         return finish()
 
