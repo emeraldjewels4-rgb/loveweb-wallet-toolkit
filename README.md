@@ -765,7 +765,7 @@ The four contract suites read `build/ProjectToken.json`, which the setup block i
 [Contributing](#contributing) builds; build it once per checkout.
 
 ```bash
-python run_tests.py            # everything below + the audit: 1224 checks
+python run_tests.py            # everything below + the audit: 1246 checks
 
 python test_no_secrets.py      # 20 checks
 python test_token.py           # 162 checks
@@ -793,6 +793,7 @@ python test_run_tests.py       # 33 checks
 python test_compare_legs.py    # 10 checks
 python test_suite_output.py    # 7 checks
 python test_php_surface.py     # 17 checks
+python test_sync_client.py     # 22 checks
 python mutation_check.py       # 11 checks
 python test_row_key_parity.py  # 34 checks
 python test_docs_counts.py     # 7 checks
@@ -806,7 +807,7 @@ distinct passphrase per file, so the address sets never overlap. An existing
 file is never touched, so on a machine that has the real exports the real
 exports are what get tested.
 
-**One command, one exit code.** [run_tests.py](run_tests.py) runs the twenty-nine
+**One command, one exit code.** [run_tests.py](run_tests.py) runs the thirty
 suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
 if any of them does -- a missing suite file and a timeout count as failures,
 never as skips, because a suite that did not run has not verified anything.
@@ -894,7 +895,7 @@ That check has run: every leg installs the same **64 packages**, 3.11, 3.12 and
 3.13 to the identical set, and 3.14 differing in exactly one line --
 `coincurve==22.0.0` from `constraints-py3.14.txt`, built from source because no
 cp314 wheel is published -- with every leg passing every suite, and every leg
-reporting the same **1224** checks.
+reporting the same **1246** checks.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
 
@@ -1006,7 +1007,7 @@ Three checks, because "the call sites look fine" is not evidence:
   the suite to name it in its summary and return 1. A suite that prints
   `ALL CHECKS PASSED` with a seeded failure fails this check.
 
-Result on the current tree: **1136 `check()` call sites, 0 swapped**, every guard
+Result on the current tree: **1160 `check()` call sites, 0 swapped**, every guard
   rejects a swapped call, and all seventeen suites report a seeded failure with exit 1.
 The auditor was itself verified by planting the exact original bug (an f-string
 condition with a boolean label) in a copy of a suite and confirming it is caught.
