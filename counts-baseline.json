@@ -9,7 +9,7 @@
     "test_distribute.py": 46,
     "test_distribute_token.py": 103,
     "test_docs_counts.py": 7,
-    "test_export.py": 26,
+    "test_export.py": 28,
     "test_export_holders.py": 41,
     "test_gen_wallets.py": 66,
     "test_merge_collect.py": 15,

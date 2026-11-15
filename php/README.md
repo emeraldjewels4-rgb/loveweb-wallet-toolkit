@@ -104,7 +104,7 @@ The account has four databases, so `config.local.php` names them all: `name` is 
 
 | Request | Does |
 |---|---|
-| `GET ?action=export&limit=N` | Every table of every configured database, rows as JSON. Caps at N rows per table (default 20,000) and marks the table `truncated` when the cap bit; `sync_database.py` refuses to merge a capped export unless `--allow-truncated` is passed, because a prefix verifies perfectly and is still not the table. |
+| `GET ?action=export&limit=N` | Every table of every configured database, rows as JSON. Caps at N rows per table (default 20,000) and marks the table `truncated` when the cap bit; `sync_database.py` refuses to merge a capped export unless `--allow-truncated` is passed, because a prefix verifies perfectly and is still not the table. The reply carries no `merged` block: that costs a COUNT, a GROUP BY and a full ordered scan of `merged_rows`, and this is the route that skips that table, so `?action=status` is where its status comes from. |
 | `POST ?action=merge` | `{"rows": [...]}` into `merged_rows` in the primary database. Every row's key is recomputed here and a row filed under a key that does not describe it is refused. |
 | `GET ?action=status[&run=TOKEN]` | Row count, bytes, digest and per-source-table counts of `merged_rows` -- for one upload's rows when `run` is given, for the whole table when it is not. `totals` always covers the whole table. |
 | `GET ?action=report` | Read-only survey of every database: server version and defaults, each table's engine and collation, the privileges `SHOW GRANTS` reports, TLS, and the limits that bite (packet size, `sql_mode`, `wait_timeout`). |
