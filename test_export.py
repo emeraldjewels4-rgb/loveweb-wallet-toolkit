@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""The export, executed: value encoding, the row cap, and what it refuses to lose.
+"""The two-phase export: what there is, then one page at a time from a cursor.
 
-export_all() is the read half of the sync and it had never run offline, because a
-route file reads the configured databases on include. It takes its databases as an
-argument now, so tests/php/export_probe.php drives the real function against a stub
-mysqli: information_schema for the names, a SELECT per table, the rows as mysqli
-would hand them back.
+The export used to be one request holding every row of every table, which is what
+made it run out of memory at 80,000 rows. It is two actions now:
 
-The value encoding is the part with a sharp edge. mysqli returns strings whatever
-the column type, so a BLOB or a latin1 column is not valid UTF-8, and json_encode
-replaces the bytes it cannot read -- silent corruption of the one kind this code
-exists to prevent. encode_value() wraps those in base64 instead, and this asserts
-both halves: what the export writes, and that the bytes survive the round trip.
+    GET ?action=tables                                  what there is, and no rows
+    GET ?action=export&table=<database>.<table>&after=K  one page, ordered by key
 
-The cap is asserted from the query text, not from the row count: "ask for cap + 1
-and report truncated" is the mechanism, and a table of exactly cap rows must not
-say it was cut.
+`after` is the last key the previous page returned, so the cap cannot lose a row:
+the walk resumes where it stopped. This suite drives both against a stub mysqli
+that applies the cursor's WHERE, ORDER BY and LIMIT, so the three-request walk here
+is the real SQL and not a re-description of it.
+
+It also holds the two properties that were the reason the export exists at all:
+encode_value() wraps a non-UTF-8 column instead of letting json_encode mangle it,
+and the primary database's merged_rows is not exported while a neighbour's table of
+the same name is.
 
     python test_export.py
 """
@@ -75,16 +75,24 @@ def finish() -> int:
     return 0
 
 
-def entry(report: dict, label: str) -> dict:
-    """The table entry for one database label, or {} when it has none."""
-    for table in report.get("tables", []):
-        if table.get("database") == label:
-            return table
+def database(listing: dict, label: str) -> dict:
+    """One database's entry in the phase-one reply, or an empty one."""
+    for entry in listing.get("databases") or []:
+        if entry.get("database") == label:
+            return entry
+    return {}
+
+
+def table_of(listing: dict, label: str, table: str) -> dict:
+    """One table's entry in the phase-one reply, or an empty one."""
+    for entry in database(listing, label).get("tables") or []:
+        if entry.get("table") == table:
+            return entry
     return {}
 
 
 def main() -> int:
-    print("export_all(): what a value becomes, what the cap cuts, what it skips")
+    print("the two-phase export: a listing, then pages from a cursor")
 
     section("a PHP interpreter and the probe")
     php = find_php()
@@ -94,10 +102,10 @@ def main() -> int:
     print(f"  using {php}")
 
     proc = subprocess.run([php, "-n", str(PROBE)], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=120)
-    check(proc.returncode == 0, f"the probe executes export_all (exit {proc.returncode})")
+                          encoding="utf-8", errors="replace", timeout=180)
+    check(proc.returncode == 0, f"the probe walks an export (exit {proc.returncode})")
     if proc.returncode != 0:
-        print("  stderr:", (proc.stderr or proc.stdout).strip()[:400])
+        print("  stderr:", (proc.stderr or proc.stdout).strip()[:500])
         return finish()
     try:
         report = json.loads(proc.stdout)
@@ -107,103 +115,115 @@ def main() -> int:
 
     check("unavailable" not in report,
           "the stub stands in: this interpreter has no mysqli to shadow")
-    encoded = report.get("encoded", {})
 
-    section("a value that is already text")
+    section("what a value becomes on its way out")
+    encoded = report.get("encoded", {})
     check(encoded.get("null", {}).get("value") is None,
           "NULL stays null rather than becoming the string 'NULL'")
     check(encoded.get("text", {}).get("value") == "plain",
           "plain text is written as it arrived")
     check(encoded.get("multibyte", {}).get("value") == "ü €",
           "and so is valid multibyte text, unescaped")
-    nested = encoded.get("nul", {}).get("value")
-    check(isinstance(nested, str) and nested == "a\x00b",
+    check(encoded.get("nul", {}).get("value") == "a\x00b",
           "a NUL byte is not a reason to wrap: the string is still valid UTF-8")
-
-    section("a value that is not text at all")
     bad = encoded.get("invalid_utf8", {})
-    wrapped = bad.get("value", {})
-    check(isinstance(wrapped, dict) and set(wrapped) == {"b64"},
-          f"invalid UTF-8 travels base64-wrapped ({wrapped})")
-    check(base64.b64decode(wrapped.get("b64", "")) == b"latin1 \xb1 byte",
+    check(bad.get("value") == {"b64": base64.b64encode(b"latin1 \xb1 byte").decode()},
+          f"invalid UTF-8 travels base64-wrapped ({bad.get('value')})")
+    check(bad.get("round_trip") == base64.b64encode(b"latin1 \xb1 byte").decode(),
           "and the bytes decode back to exactly what the column held")
     check("\ufffd" not in str(bad.get("json")),
           "the JSON it becomes carries no replacement character")
-    check(bad.get("round_trip") == base64.b64encode(b"latin1 \xb1 byte").decode(),
-          "and re-encoding the decoded bytes gives the same base64 back")
     check(encoded.get("whole_float", {}).get("value") == "1"
           and encoded.get("int", {}).get("value") == "1",
-          "numbers become strings: an export's values are what mysqli hands back")
+          "numbers become strings: a page's values are what mysqli hands back")
 
-    section("the cap")
-    capped = report.get("capped", {})
-    exact = report.get("exact", {})
-    journal_capped = entry(capped, "journal")
-    journal_exact = entry(exact, "journal")
-    check(capped.get("cap") == 2 and exact.get("cap") == 3,
-          "the cap the caller asked for is echoed in the reply")
-    limits = [query for query in report.get("journal_queries", [])
-              if "broadcast_journal` LIMIT" in query]
-    check(limits == ["SELECT * FROM `broadcast_journal` LIMIT 3",
-                     "SELECT * FROM `broadcast_journal` LIMIT 4"],
-          f"each table is fetched as cap + 1 rows ({limits})")
-    check(len(journal_capped.get("rows", [])) == 2
-          and journal_capped.get("truncated") is True,
-          "a table with more rows than the cap is cut and says so")
-    check(len(journal_exact.get("rows", [])) == 3
-          and journal_exact.get("truncated") is False,
-          "a table with exactly cap rows is not reported as cut")
-
-    section("what the cap counts")
-    check(capped.get("rows") == 4,
-          "the reply's row count is the rows exported, not the ones asked for "
-          f"({capped.get('rows')}: 2 journal + 1 cjd + 1 neighbour)")
-    check(exact.get("rows") == 5, "and it follows the cap (3 + 1 + 1)")
-
-    section("the table this route writes")
-    labels = [table.get("database") for table in capped.get("tables", [])]
-    check("toolkit" not in labels,
-          "the primary database's merged_rows is not exported: merging it would "
-          "merge the previous merge")
-    neighbour = entry(capped, "neighbour")
-    check(neighbour.get("table") == "merged_rows"
-          and len(neighbour.get("rows", [])) == 1,
-          "a neighbour with a table of the same name is exported: the skip is the "
+    section("phase one: what there is, with no rows")
+    listing = report.get("listing", {})
+    check(listing.get("action") == "tables" and len(listing.get("databases") or []) == 7,
+          f"one entry per configured database ({len(listing.get('databases') or [])})")
+    check(all("rows" not in entry for entry in listing.get("databases") or []),
+          "the listing carries tables and columns, not rows: it stays small however "
+          "large the databases are")
+    journal = table_of(listing, "journal", "broadcast_journal")
+    check(journal.get("cursor") == "id" and journal.get("columns") == ["id", "hash"],
+          f"a table says its columns and the key a page is ordered by ({journal.get('cursor')})")
+    primary = database(listing, "toolkit")
+    check(primary.get("on") == 1 and not (primary.get("tables") or []),
+          "the primary database's merged_rows is not offered for export: merging it "
+          "would merge the previous merge")
+    neighbour = table_of(listing, "neighbour", "merged_rows")
+    check(bool(neighbour),
+          "a neighbour with a table of the same name is offered: the skip is the "
           "primary's own output, not the name")
-
-    section("what the reply does not compute")
-    check("merged" not in capped,
-          "no merged status in an export: it costs a COUNT, a GROUP BY and a full "
-          "ordered scan of merged_rows, on the route that skips that table")
-    check(sorted(capped) == ["action", "cap", "generated_at", "rows", "tables"],
-          f"and its fields are exactly the export's own ({sorted(capped)}), so a "
-          "block creeping back fails here")
-
-    section("a database that cannot be read")
-    offline = entry(capped, "offline")
+    cjd = table_of(listing, "cjd", "cjd_source")
+    check(cjd.get("cursor") is None,
+          "a table with no primary key and no id cannot be walked, and says so")
+    offline = database(listing, "offline")
     check(offline.get("on") == 0 and offline.get("error") == "not reachable",
-          "an unreachable database is reported as such instead of omitted")
-    locked = entry(capped, "locked")
-    check(locked.get("on") == 1 and locked.get("error") == "rows not readable"
-          and locked.get("rows") == [],
-          "a refused SELECT leaves the table listed and its rows empty")
-    check(len(capped.get("tables", [])) == 5
-          and len(journal_capped.get("rows", [])) == 2,
-          "and neither one stops the tables that could be read")
+          "an unreachable database is reported instead of omitted")
+
+    section("phase two: the walk, one page at a time")
+    pages = report.get("pages", {})
+    first, second, third = pages.get("first", {}), pages.get("second", {}), pages.get("third", {})
+    check([row["values"]["id"] for row in first.get("rows") or []] == ["1", "2"]
+          and first.get("more") is True and first.get("next") == "2",
+          f"page one: 2 rows, more, and the key to continue from "
+          f"({[r['values']['id'] for r in first.get('rows') or []]}, next {first.get('next')!r})")
+    check([row["values"]["id"] for row in second.get("rows") or []] == ["3"]
+          and second.get("more") is False and second.get("next") is None,
+          "page two: the last row, and no more to ask for")
+    walked = [row["values"]["id"] for page in (first, second) for row in page.get("rows") or []]
+    check(walked == ["1", "2", "3"],
+          f"the pages together are the whole table, each row once ({walked})")
+    check(third.get("rows") == [] and third.get("more") is False,
+          "asking past the last key returns nothing instead of page one again")
+    check(first.get("cursor") == "id" and first.get("paged") is True,
+          "the page names the cursor it was ordered by")
+
+    queries = [query for query in report.get("journal_queries") or []
+               if "broadcast_journal` " in query]
+    check(queries[:2] == [
+        "SELECT * FROM `broadcast_journal` ORDER BY `id` ASC LIMIT 3",
+        "SELECT * FROM `broadcast_journal` WHERE `id` > '2' ORDER BY `id` ASC LIMIT 3",
+    ], f"the cursor is the WHERE, not a re-read: {queries[:2]}")
+    check(all("LIMIT 3" in query for query in queries[:2]),
+          "and each page asks for cap + 1 rows, so 'more' is answered by the database")
+
+    section("a page that cannot be walked")
+    single = report.get("single", {})
+    check(single.get("paged") is False and single.get("more") is False,
+          "a keyless table is read once and reports paged: false")
+    wrapped = [row["values"].get("content") for row in single.get("rows") or []
+               if isinstance(row["values"].get("content"), dict)]
+    check(len(single.get("rows") or []) == 3
+          and wrapped == [{"b64": base64.b64encode(b"latin1 \xb1 byte").decode()}],
+          f"and its binary column still travels wrapped, in a page ({len(single.get('rows') or [])} rows)")
+
+    section("what a page refuses")
+    refused = report.get("refusals", {})
+    check(refused.get("no database", {}).get("status") == 404
+          and "no database by that name" in (refused.get("no database", {}).get("message") or ""),
+          "a database label nobody configured: 404, by name")
+    check(refused.get("no table", {}).get("status") == 404
+          and "no table by that name" in (refused.get("no table", {}).get("message") or ""),
+          "a table the database does not have: 404, by name")
+    check(refused.get("offline", {}).get("status") == 503
+          and refused.get("offline", {}).get("message") == "that database is not reachable",
+          "an unreachable database: 503, rather than an empty page that looks complete")
+    check(refused.get("refused select", {}).get("status") == 503
+          and refused.get("refused select", {}).get("message") == "that table is not readable",
+          "a SELECT the account may not run: 503, named for what failed")
 
     section("what a row carries")
-    rows = journal_capped.get("rows", [])
-    check(all(len(row.get("key", "")) == 64
-              and row["key"] == row["key"].lower()
-              and all(c in "0123456789abcdef" for c in row["key"])
-              for row in rows),
+    rows = first.get("rows") or []
+    check(all(len(row.get("key", "")) == 64 and row["key"] == row["key"].lower()
+              and all(char in "0123456789abcdef" for char in row["key"]) for row in rows),
           "every row carries a lowercase hex key")
-    check(all(row.get("bytes") == len(json.dumps(row.get("values"), ensure_ascii=False,
-                                                 separators=(",", ":")).encode("utf-8"))
+    check(all(row.get("bytes") == len(json.dumps(row["values"], separators=(",", ":")))
               for row in rows),
-          "row_bytes is the byte length of the JSON it is stored with")
-    check(sorted(journal_capped.get("columns", [])) == ["hash", "id"],
-          "the column list comes from information_schema, not from the first row")
+          "bytes is the byte length of the values as JSON")
+    check(set(rows[0].get("values", {})) == {"id", "hash"},
+          "and the row holds the table's columns, from information_schema")
 
     return finish()
 

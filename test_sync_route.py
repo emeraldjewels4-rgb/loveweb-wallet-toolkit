@@ -152,13 +152,24 @@ def main() -> int:
     section("anything else")
     unknown = cases.get("unknown action", {})
     check(unknown.get("status") == 400
-          and unknown.get("message") == "unknown action; use export, merge, report or status",
-          "an unknown action: 400 listing the four that exist")
+          and unknown.get("message") == "unknown action; use tables, export, merge, report or status",
+          "an unknown action: 400 listing the five that exist")
+
+    section("the export's shape, before anything is read")
+    unnamed = cases.get("export without a table", {})
+    check(unnamed.get("status") == 400
+          and "export is one table at a time" in (unnamed.get("message") or ""),
+          "an export that names no table: 400, pointing at ?action=tables")
+    badly = cases.get("export naming a table badly", {})
+    check(badly.get("status") == 400 and "name the table as" in (badly.get("message") or ""),
+          "and a table named without a database: 400, saying how to name it")
+    check(unnamed.get("written") == 0 and badly.get("written") == 0,
+          "neither read a row: the refusal comes before the database is opened")
 
     section("what each case left behind")
     refusals = {name: case for name, case in cases.items() if case.get("status") != 200}
     merged = [name for name, case in cases.items() if case.get("status") == 200]
-    check(len(refusals) == 11, f"11 refusals were executed ({len(refusals)})")
+    check(len(refusals) == 13, f"13 refusals were executed ({len(refusals)})")
     check(all(case.get("written") == 0 and case.get("committed") is False
               for case in refusals.values()),
           "no refusal wrote a row or committed a transaction")

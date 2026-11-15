@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""A capped export is a prefix, so the sync refuses to merge it quietly.
+"""A table that cannot be walked stops the run instead of merging a prefix.
 
-`?action=export` stops at `cap + 1` rows per table and sets `truncated` when the
-cap bit. Nothing read it. A table with 200,000 rows exported 20,000, the client
-merged them, the digest check compared the rows it sent against the rows that
-were stored, they matched, and the run printed "verified end to end". Every
-sentence of that is true except the one a reader infers: that the table is in
-the table.
+Paging removed the old truncation: a table with a key is read to the end, one page
+at a time, so the page size bounds a request and not the export. What remains is the
+table with no primary key and no id -- there is no column to resume from, so it is
+read once and the page says there was more. That page is a prefix, and a prefix
+verifies perfectly: the digest compares the rows that were sent against the rows
+that were stored, both true, while the rows past the page were never in the run.
 
-So the flag is a refusal now, by name, before the snapshot is overwritten with a
-prefix: which table, how many rows came back, and the two ways forward -- raise
-`--limit`, or say `--allow-truncated` and merge what came knowing what did not.
-
-The client is driven, not re-implemented: main() runs here with its network call
-replaced by the export_probe's real capped export (cap 2 against a three-row
-table), its snapshot pointed at a temporary file, and its FTP upload skipped. What
-is asserted is the exit code, the reason printed, and that no snapshot was written
-when the run refused.
+So the run stops, names the table and how many rows it did get, and offers the two
+ways forward. The client is driven, not re-implemented: main() runs here with its
+network call replaced by the pages export_probe recorded, its snapshot pointed at a
+temporary file, and its FTP upload skipped.
 
     python test_truncated_export.py
 """
@@ -82,19 +77,22 @@ def finish() -> int:
     return 0
 
 
-def drive(argv: list[str], export_doc: dict, snapshot: Path) -> tuple[int, str]:
-    """Run the client's main() with the host replaced by one export document."""
+def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple[int, str]:
+    """Run the client's main() with the host replaced by recorded replies."""
     asked: list[str] = []
 
     def fake_call(url, key, payload=None):
         asked.append(url)
         if "action=report" in url:
-            # Enough for the ALTER preflight to pass, so the export is reached.
             return {"databases": {"toolkit": {"merged_table": {
                 "exists": True, "has_run_token": True,
                 "privileges": {"alter": True, "create": True, "drop": True}}}}}
-        if "action=export" in url:
-            return export_doc
+        if "action=tables" in url:
+            return listing
+        if "action=export&table=journal." in url:
+            return report["pages"]["second"] if "after=2" in url else report["pages"]["first"]
+        if "action=export&table=cjd." in url:
+            return report["keyless_capped"]
         raise AssertionError("the client asked for something this test does not serve: %s" % url)
 
     saved = (client.call, client.SNAPSHOT, client.import_key, sys.argv)
@@ -114,9 +112,9 @@ def drive(argv: list[str], export_doc: dict, snapshot: Path) -> tuple[int, str]:
 
 
 def main() -> int:
-    print("a capped export, driven through the client that merges it")
+    print("a table with no key to page by, driven through the client")
 
-    section("the fixture has to be a capped export")
+    section("the fixture has to be a page that cannot continue")
     php = find_php()
     check(php is not None, "php_cli_is_available (PHP_BIN, PATH or .sandbox/php/php.exe)")
     if not php:
@@ -124,66 +122,69 @@ def main() -> int:
 
     proc = subprocess.run([php, "-n", str(PROBE)], capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=180)
-    check(proc.returncode == 0, f"the probe runs an export twice (exit {proc.returncode})")
+    check(proc.returncode == 0, f"the probe records the pages (exit {proc.returncode})")
     if proc.returncode != 0:
         print("  stderr:", (proc.stderr or proc.stdout).strip()[:500])
         return finish()
     report = json.loads(proc.stdout)
 
-    capped = report["capped"]
-    exact = report["exact"]
-    flagged = {table["table"]: table["truncated"]
-               for table in capped["tables"] if table.get("on")}
-    check(flagged.get("broadcast_journal") is True
-          and not any(value for table, value in flagged.items()
-                      if table != "broadcast_journal"),
-          f"the cap bit on the journal table and nothing else ({flagged})")
-    check(client.capped_tables(exact) == [],
-          "the same export at a cap that fits reports nothing truncated")
+    keyless = report["keyless_capped"]
+    check(keyless.get("paged") is False and keyless.get("more") is True
+          and keyless.get("cursor") is None,
+          f"a keyless table's page with rows left over: paged=false, more=true "
+          f"({len(keyless.get('rows') or [])} row(s) of 3)")
 
-    section("the client names what it was given")
-    names = client.capped_tables(capped)
-    check(names == [("journal.broadcast_journal", 2)],
-          f"capped_tables() names the table and what came back ({names})")
-    check(exact.get("rows") > capped.get("rows"),
-          f"the capped export carries {capped.get('rows')} row(s) where the full one "
-          f"carries {exact.get('rows')}: a prefix is smaller, which is the point")
+    keep = [entry for entry in report["listing"]["databases"]
+            if entry.get("database") in {"journal", "cjd"}]
+    listing = {"databases": keep}
 
-    section("a capped export refuses, and says why")
+    section("the walk names what it could not reach the end of")
+    def fetch(label, table, after):
+        if label == "journal":
+            return report["pages"]["second"] if after == "2" else report["pages"]["first"]
+
+        return keyless
+
+    document, capped = client.walk_export(fetch, listing, 2)
+    check(capped == [("cjd.cjd_source", 1)],
+          f"capped names the table and the row it got ({capped})")
+    check(document["rows"] == 4,
+          f"while the walkable table was read whole ({document['rows']} rows in all)")
+
+    section("a keyless page refuses, and says why")
     # Under .sandbox so the snapshot path stays inside the repository: the client
-    # prints it relative to ROOT, and a temporary directory elsewhere is not. The
-    # directory is gitignored and absent in a fresh clone, which is how this first
-    # failed on CI while passing on the machine that had one.
+    # prints it relative to ROOT, and the directory is absent in a fresh clone.
     (ROOT / ".sandbox").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=str(ROOT / ".sandbox")) as folder:
         snapshot = Path(folder) / "db_merged.json"
-        code, output = drive(["--dry-run", "--no-upload"], capped, snapshot)
+        code, output = drive(["--dry-run", "--no-upload"], report, listing, snapshot)
         check(code == 1, f"the run exits 1 rather than printing a success (exit {code})")
-        check("journal.broadcast_journal is truncated: 2 row(s) came back" in output,
+        check("cjd.cjd_source is truncated: 1 row(s) came back" in output,
               "the reason names the table and the rows that came back")
         check("refusing to merge a prefix" in output,
               "and says refusing rather than skipped or warning")
-        check("--allow-truncated" in output and "50,000" in output,
+        check("no key to page by" in output and "--allow-truncated" in output,
               "and gives both ways forward: a bigger --limit, or the flag")
         check(not snapshot.is_file(),
               "no snapshot was written, so the prefix did not replace the record")
 
         section("--allow-truncated merges the prefix, out loud")
-        code, output = drive(["--dry-run", "--no-upload", "--allow-truncated"], capped, snapshot)
+        code, output = drive(["--dry-run", "--no-upload", "--allow-truncated"], listing=listing,
+                             report=report, snapshot=snapshot)
         check(code == 0, f"the same export goes through when the flag is passed (exit {code})")
         check("merging a prefix anyway (--allow-truncated)" in output,
               "and the run says it is merging a prefix")
         check(snapshot.is_file() and json.loads(snapshot.read_text())["rows"] == 4,
               "the snapshot records the 4 rows that were actually there")
 
-        section("an export that fits needs no flag")
+        section("a listing with only walkable tables needs no flag")
+        walkable = {"databases": [entry for entry in keep if entry["database"] == "journal"]}
         fresh = Path(folder) / "full.json"
-        code, output = drive(["--dry-run", "--no-upload"], exact, fresh)
-        check(code == 0, f"an uncapped export runs without --allow-truncated (exit {code})")
-        check("truncated" not in output,
-              "and nothing in it mentions truncation")
-        check(json.loads(fresh.read_text())["rows"] == 5,
-              "the snapshot holds all 5 rows of the full export")
+        code, output = drive(["--dry-run", "--no-upload"], report, walkable, fresh)
+        check(code == 0, f"an export of walkable tables runs without the flag (exit {code})")
+        check("truncated" not in output, "and nothing in it mentions truncation")
+        check(json.loads(fresh.read_text())["rows"] == 3,
+              "the snapshot holds all 3 rows, read across two pages")
 
     return finish()
 
