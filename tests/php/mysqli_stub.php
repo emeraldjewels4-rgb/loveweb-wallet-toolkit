@@ -117,7 +117,60 @@ class mysqli
     public bool $rolledBack = false;
     /** When set, the table's columns cannot be read, which is the route's 503 path. */
     public bool $failColumns = false;
+    /** @var array<int,array{0:string,1:array<int,array<string,mixed>>}> needles and the rows they answer with */
+    private array $answers = array();
+    /** @var array<int,string> needles whose query is refused, the way a missing grant is */
+    private array $refused = array();
     private int $writes = 0;
+
+    /**
+     * Answer any query containing `$needle` with these rows.
+     *
+     * The export asks information_schema for names and then selects rows; a probe
+     * that has no server says what each of those answers is, and the stub hands it
+     * back in the shape mysqli would.
+     *
+     * @param array<int,array<string,mixed>> $rows
+     */
+    public function answer(string $needle, array $rows): void
+    {
+        $this->answers[] = array($needle, $rows);
+    }
+
+    /** Refuse any query containing `$needle`: a SELECT the account may not run. */
+    public function refuse(string $needle): void
+    {
+        $this->refused[] = $needle;
+    }
+
+    /** The registered answer for this SQL, or null when nothing was registered. */
+    public function result_for(string $sql): ?StubResult
+    {
+        foreach ($this->refused as $needle) {
+            if (str_contains($sql, $needle)) {
+                return null;
+            }
+        }
+        foreach ($this->answers as [$needle, $rows]) {
+            if (str_contains($sql, $needle)) {
+                return new StubResult($rows);
+            }
+        }
+
+        return null;
+    }
+
+    /** Whether this SQL was registered as refused. */
+    public function is_refused(string $sql): bool
+    {
+        foreach ($this->refused as $needle) {
+            if (str_contains($sql, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /** @return array<string,array<string,mixed>> */
     public function stored(): array
@@ -185,6 +238,14 @@ class mysqli
     public function run(string $sql): StubResult|bool
     {
         $this->queries[] = $sql;
+
+        if ($this->is_refused($sql)) {
+            return false;
+        }
+        $registered = $this->result_for($sql);
+        if ($registered !== null) {
+            return $registered;
+        }
 
         if (str_starts_with($sql, 'CREATE TABLE')) {
             return true;
@@ -366,6 +427,19 @@ function mysqli_stmt_bind_param(mysqli_stmt $statement, string $types, ...$param
     return true;
 }
 
+function mysqli_stmt_get_result(mysqli_stmt $statement): StubResult|bool
+{
+    $link = $statement->link;
+    if (!$link instanceof mysqli) {
+        return false;
+    }
+    if ($link->is_refused($statement->sql)) {
+        return false;
+    }
+
+    return $link->result_for($statement->sql) ?? new StubResult(array());
+}
+
 function mysqli_stmt_execute(mysqli_stmt $statement): bool
 {
     $link = $statement->link;
@@ -383,7 +457,11 @@ function mysqli_stmt_execute(mysqli_stmt $statement): bool
     foreach ($statement->disagreements as $problem) {
         $link->disagreements[] = 'statement: ' . $problem;
     }
-    $link->apply($statement->params);
+    // Only the merge's INSERT is a write; the export's statements are reads and
+    // answer through mysqli_stmt_get_result().
+    if (str_starts_with(ltrim($statement->sql), 'INSERT')) {
+        $link->apply($statement->params);
+    }
 
     return true;
 }
