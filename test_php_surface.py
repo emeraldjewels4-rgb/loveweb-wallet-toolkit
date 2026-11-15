@@ -6,7 +6,7 @@ merge.php, db_sync.php and keys.php had probes and the rest had only ever run on
 a host. That came to light by reading the directory by hand, which is not a check.
 
 So: every function, class, interface and trait declared at column 0 in a tracked
-php/ file is a symbol. A symbol is covered when a probe or a suite names it, or
+php/ file is a symbol. A symbol is covered when a probe or a suite calls it, or
 when something covered calls it -- `refuse()` is never named by a test, but every
 route refusal goes through it, so counting only direct mentions would report it
 as untested when it is exercised constantly.
@@ -117,11 +117,23 @@ def calls_of(files: list[Path], symbols: dict[str, list[str]]) -> dict[str, set[
 
 
 def named_in_tests(symbols: dict[str, list[str]], test_files: list[Path]) -> set[str]:
-    """Symbols some probe or suite mentions, in code or in prose."""
+    """Symbols some probe or suite calls: `name(`.
+
+    The parenthesis is the difference between testing a function and writing about
+    one. Word matching read "the cap bit" in a test of the export's row cap as a
+    reference to bit(), the 0/1 formatter in chain.php, and quietly retired it from
+    the untested list -- which is the sort of coverage inflation this file exists to
+    prevent.
+    """
     blob = "\n".join(path.read_text(encoding="utf-8", errors="replace")
                      for path in test_files)
+    # A call or a construction, a type used as a type, or a static call. A name
+    # written bare is prose, and prose is how "the cap bit" retired bit().
+    patterns = (r"\b%s\s*\(",
+                r"\b(?:implements|extends|instanceof)\s+%s\b",
+                r"\b%s::")
     return {name for name in symbols
-            if re.search(r"\b%s\b" % re.escape(name), blob) is not None}
+            if any(re.search(pattern % re.escape(name), blob) for pattern in patterns)}
 
 
 def covered(symbols: dict[str, list[str]], edges: dict[str, set[str]],
@@ -235,7 +247,9 @@ def main(argv: list[str] | None = None) -> int:
           + ("".join(f"\n          {name} ({symbols[name][0]}) has no probe or suite "
                      f"naming it" for name in landed) if landed else ""))
 
-    stale = sorted(name for name in allowed if name not in missing)
+    # A symbol that stopped existing is the check above's business; calling that
+    # "covered now" would be a lie in the message that names it.
+    stale = sorted(name for name in allowed if name in symbols and name not in missing)
     check(not stale,
           "no recorded symbol has since been covered"
           + (f" (covered now: {stale}; drop them, then --write-allowlist)"

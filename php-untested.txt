@@ -31,3 +31,4 @@ ensure_chain_table  # db.php: CREATE TABLE for chain_connections
 ensure_cjd_table  # db.php: CREATE TABLE for cjd_source
 ensure_schema  # db.php: CREATE TABLE for broadcast_journal
 h  # view helper, duplicated in index.php and chain.php
+pol  # index.php's wei formatter: six decimals, only the preview's markup calls it

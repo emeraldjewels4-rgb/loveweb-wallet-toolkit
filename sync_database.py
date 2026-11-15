@@ -5,11 +5,19 @@
     python sync_database.py --dry-run         # download and merge locally, send nothing
     python sync_database.py --no-upload       # use the routes already on the host
     python sync_database.py --limit 5000      # rows per table in one export
+    python sync_database.py --allow-truncated # merge a table the cap cut short
 
 Download
     php/db_sync.php?action=export reads every table of every database named in
     php/config.local.php -- the primary first, then the SELECT-only neighbours --
     and returns the rows as JSON. That path writes nothing.
+
+    It caps each table at --limit rows and marks a table `truncated` when the cap
+    bit. That is a prefix of the table, and the digest check cannot notice it --
+    it compares the rows that were sent against the rows that were stored, both
+    true, while the rows past the cap were never in the run at all. So the run
+    stops and names the table: raise --limit (the host allows 50,000 per table per
+    request), or pass --allow-truncated to merge what came and say so.
 
 Merge
     Rows are merged on the key db_sync.php computed for them, so the same row
@@ -135,6 +143,23 @@ def call(url, key, payload=None):
         return json.loads(body)
     except json.JSONDecodeError:
         sys.exit("%s did not answer with JSON: %s" % (url, body[:200]))
+
+
+def capped_tables(export):
+    """Tables the export's row cap cut short, as [(database.table, rows exported)].
+
+    A capped table is a prefix of itself, and merging one is not wrong so much as
+    incomplete: the digest verification would still pass, because it checks the
+    rows that were sent against the rows that were stored. What it cannot check is
+    the rows that never left the host, and a run that says "verified end to end"
+    after merging 20,000 of 200,000 rows has said something it did not do.
+    """
+    capped = []
+    for table in export.get("tables") or []:
+        if table.get("truncated"):
+            capped.append(("%s.%s" % (table.get("database"), table.get("table")),
+                           len(table.get("rows") or [])))
+    return capped
 
 
 def collect(export):
@@ -323,6 +348,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="download and merge locally, send nothing")
     parser.add_argument("--no-verify", action="store_true", help="skip the live digest check")
+    parser.add_argument("--allow-truncated", action="store_true",
+                        help="merge a table the export's cap cut short (a prefix)")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="do not ask the host whether ALTER is granted before merging")
     args = parser.parse_args()
@@ -347,6 +374,22 @@ def main():
 
     cap = max(1, min(50000, args.limit))
     export = call("%s?action=export&limit=%d" % (SYNC_URL, cap), key)
+
+    # Before anything is merged, and before the snapshot is overwritten with a
+    # prefix: a capped table means the export is not the whole picture.
+    capped = capped_tables(export)
+    if capped:
+        for name, rows in capped:
+            print("  export: %s is truncated: %d row(s) came back, the table holds more"
+                  % (name, rows))
+        if not args.allow_truncated:
+            print("  export: refusing to merge a prefix of %d table(s): raise --limit "
+                  "(the host allows 50,000 per table per request) or pass "
+                  "--allow-truncated to merge what came" % len(capped))
+            sys.exit(1)
+        print("  export: merging a prefix anyway (--allow-truncated); the rows past "
+              "the cap are not in this run")
+
     merged, tables, seen_rows, skipped = collect(export)
     print("  export: %d table(s) read, %d row(s)" % (tables, seen_rows))
     for name, reason in skipped:
@@ -406,8 +449,9 @@ def main():
               % (len(merged), expected[:16], run[:8]))
         sys.exit(1)
 
-    print("  done: %d row(s) merged from %d table(s), this run verified end to end"
-          % (len(merged), tables))
+    print("  done: %d row(s) merged from %d table(s), this run verified end to end%s"
+          % (len(merged), tables,
+             " of a capped export" if capped else ""))
 
 
 if __name__ == "__main__":

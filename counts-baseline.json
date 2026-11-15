@@ -30,6 +30,7 @@
     "test_sync_client.py": 27,
     "test_sync_route.py": 22,
     "test_token.py": 162,
+    "test_truncated_export.py": 17,
     "test_update_toolkit.py": 29,
     "test_watch_only.py": 41
   }
