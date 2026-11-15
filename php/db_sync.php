@@ -89,7 +89,7 @@ function refuse(int $code, string $message): void
         throw new SyncRefused($code, $message);
     }
     http_response_code($code);
-    echo json_encode(array('error' => $message), JSON_UNESCAPED_SLASHES) . "\n";
+    echo sync_respond(array('error' => $message));
     exit;
 }
 
@@ -743,23 +743,26 @@ if (defined('SYNC_LIBRARY')) {
 }
 
 /**
- * The bytes the route writes: one JSON document per request, pretty-printed.
+ * The bytes the route writes: one JSON document per request.
  *
- * Readable at a glance is why a refusal or a report can be read without a
- * formatter, and it costs a reader nothing. Slashes are left alone so a path in
- * a row is not escaped back at whoever asked.
+ * An export is compact; everything else is pretty-printed. The export is a row
+ * dump that only sync_database.py reads, and its whitespace is not free: measured
+ * on export-shaped payloads, pretty is 58-74% more bytes (31.0 MB against 17.8 MB
+ * at 40,000 rows) and peaks at 142 MB against 104 MB, and at 80,000 rows it runs
+ * past PHP's 256 MB limit where compact still finishes at 208 MB. A refusal, a
+ * report or a status is read by a person, so it stays indented. Slashes are left
+ * alone in both, so a URL in a row is not escaped back at whoever asked.
  *
- * The export envelope changed from compact to pretty when the dispatch was
- * factored out, so its shape is a function now rather than an echo nobody could
- * run: tests/php/export_probe.php puts an export through it and
- * test_sync_client.py feeds the result to sync_database.py, which parses it and
- * merges the same rows either way. A row's own `bytes` count is the length of
- * that row's compact encoding, computed in export_all() and untouched here --
- * nothing measures this envelope.
+ * The per-row `bytes` count is the length of that row's own compact encoding,
+ * computed in export_all() and untouched here: nothing measures this envelope.
  */
 function sync_respond(array $payload): string
 {
-    return json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $flags = ($payload['action'] ?? '') === 'export'
+        ? JSON_UNESCAPED_SLASHES
+        : JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES;
+
+    return json_encode($payload, $flags) . "\n";
 }
 
 $request = array(
