@@ -828,7 +828,7 @@ with the line `ALL CHECKS PASSED` -- which is a summary, not a check.
 **The PHP surface is counted, not discovered.** [test_php_surface.py](test_php_surface.py)
 reads every `function`, `class`, `interface` and `trait` declared at column 0 in
 a tracked `php/` file and asks whether any probe or suite names it, or whether
-something a test names calls it. What is left -- 23 of 53 symbols, the chain
+something a test names calls it. What is left -- 24 of 53 symbols, the chain
 interface, the status readers, `cjd_store.php`'s table -- is listed in
 [php-untested.txt](php-untested.txt) with a reason each, and that list is the
 check: a symbol that lands with no test naming it fails the build by name, and

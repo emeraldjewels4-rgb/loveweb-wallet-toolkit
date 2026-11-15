@@ -151,7 +151,10 @@ def main() -> int:
 
     section("a capped export refuses, and says why")
     # Under .sandbox so the snapshot path stays inside the repository: the client
-    # prints it relative to ROOT, and a temporary directory elsewhere is not.
+    # prints it relative to ROOT, and a temporary directory elsewhere is not. The
+    # directory is gitignored and absent in a fresh clone, which is how this first
+    # failed on CI while passing on the machine that had one.
+    (ROOT / ".sandbox").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=str(ROOT / ".sandbox")) as folder:
         snapshot = Path(folder) / "db_merged.json"
         code, output = drive(["--dry-run", "--no-upload"], capped, snapshot)
