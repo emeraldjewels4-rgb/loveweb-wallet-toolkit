@@ -27,7 +27,7 @@
     "test_run_tests.py": 33,
     "test_seed_pool.py": 39,
     "test_suite_output.py": 7,
-    "test_sync_client.py": 22,
+    "test_sync_client.py": 27,
     "test_sync_route.py": 22,
     "test_token.py": 162,
     "test_update_toolkit.py": 29,

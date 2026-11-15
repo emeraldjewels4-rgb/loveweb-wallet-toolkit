@@ -114,9 +114,17 @@ $report = array(
     // What the export actually asked the database, so the cap is visible as a
     // LIMIT rather than inferred from the row count.
     'journal_queries' => $journal->queries,
-    // The reply as the route writes it, so a client can be run against the real
-    // bytes instead of against a re-encoding of the same PHP array.
-    'envelope' => sync_respond($camped),
+    // The replies as the route writes them, so a client can be run against the
+    // real bytes instead of a re-encoding of the same PHP array. The export is
+    // compact because it is a row dump; the other actions are read by a person.
+    'replies' => array(
+        'export' => sync_respond($camped),
+        'status' => sync_respond(array(
+            'action' => 'status',
+            'merged' => array('rows' => 4, 'bytes' => 900, 'digest' => str_repeat('ab', 32)),
+        )),
+        'error' => sync_respond(array('error' => 'forbidden')),
+    ),
 );
 
 echo json_encode($report, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE), "\n";
