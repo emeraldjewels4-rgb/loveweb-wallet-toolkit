@@ -22,6 +22,7 @@ refused for the wrong reason cannot pass.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -152,8 +153,23 @@ def main() -> int:
     section("anything else")
     unknown = cases.get("unknown action", {})
     check(unknown.get("status") == 400
-          and unknown.get("message") == "unknown action; use tables, export, merge, report or status",
-          "an unknown action: 400 listing the five that exist")
+          and unknown.get("message") == "unknown action; use ping, tables, export, merge, report or status",
+          "an unknown action: 400 listing the six that exist")
+
+    section("the action a client asks before anything else")
+    ping = cases.get("ping", {})
+    payload = ping.get("payload") or {}
+    route_php = ROOT / "php" / "db_sync.php"
+    check(ping.get("status") == 200 and payload.get("action") == "ping",
+          "?action=ping answers 200 with action=ping")
+    check(isinstance(payload.get("version"), int) and payload["version"] >= 1,
+          f"and a version number ({payload.get('version')!r})")
+    check(payload.get("sha256") == hashlib.sha256(route_php.read_bytes()).hexdigest(),
+          "its sha256 is the file that is running, byte for byte")
+    check(payload.get("bytes") == route_php.stat().st_size,
+          "and its size, so a short copy is visible without hashing anything")
+    check(ping.get("written") == 0 and payload.get("route") == "db_sync.php",
+          "and it answers without touching a database")
 
     section("the export's shape, before anything is read")
     unnamed = cases.get("export without a table", {})

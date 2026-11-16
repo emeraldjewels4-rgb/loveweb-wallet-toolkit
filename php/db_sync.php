@@ -51,6 +51,13 @@ const SYNC_PAGE_ROWS = 2000;
 const SYNC_PAGE_MAX = 20000;
 
 /**
+ * This route's contract version: bumped by hand when a caller must be able to
+ * tell that the shape changed. ?action=ping reports it, so a client can say which
+ * file the host is serving instead of guessing from a failure.
+ */
+const SYNC_ROUTE_VERSION = 3;
+
+/**
  * The import key, if one was installed on the host. Never echoed.
  *
  * The path is a parameter so a probe can point at a key it wrote, or at one that
@@ -759,6 +766,37 @@ function database_report(): array
 }
 
 /**
+ * What this file is, as the host sees it: ?action=ping.
+ *
+ * The sha256 is of the file that is running -- `$file` defaults to this one -- so
+ * a copy that landed half-written answers with the hash of the bytes that made it,
+ * and a client that knows what it uploaded can tell the difference before it asks
+ * for a listing. `bytes` is the same fact by size, which is what a truncated FTP
+ * STOR leaves behind and what a short file's own hash cannot make obvious.
+ *
+ * No database is touched, and no row is read: this answers on a host whose
+ * databases are all down, which is exactly when the next request would otherwise
+ * fail as a 500 that names nothing.
+ *
+ * @return array<string,mixed>
+ */
+function route_identity(?string $file = null): array
+{
+    $file = $file ?? __FILE__;
+    $sha = @hash_file('sha256', $file);
+    $size = @filesize($file);
+
+    return array(
+        'action' => 'ping',
+        'route' => 'db_sync.php',
+        'version' => SYNC_ROUTE_VERSION,
+        'sha256' => $sha === false ? null : $sha,
+        'bytes' => $size === false ? null : $size,
+        'generated_at' => gmdate('c'),
+    );
+}
+
+/**
  * Answer one request: the guard, then the action, then its payload.
  *
  * A function of what the request says rather than of PHP's superglobals, so the
@@ -795,6 +833,13 @@ function sync_route(array $request, ?string $key_file = null, ?mysqli $link = nu
     }
 
     $action = isset($query['action']) ? strtolower((string) $query['action']) : 'export';
+
+    // Before the actions that read databases: what file is answering. A client
+    // that has just uploaded one can tell a stale or half-written copy from a
+    // live one here, rather than from an opaque 500 on the first export.
+    if ($action === 'ping') {
+        return route_identity();
+    }
 
     if ($action === 'status') {
         $run = isset($query['run']) ? (string) $query['run'] : null;
@@ -862,7 +907,7 @@ function sync_route(array $request, ?string $key_file = null, ?mysqli $link = nu
         return merge_rows($payload['rows'], $run, $link);
     }
 
-    refuse(400, 'unknown action; use tables, export, merge, report or status');
+    refuse(400, 'unknown action; use ping, tables, export, merge, report or status');
 }
 
 // ---------------------------------------------------------------------------
