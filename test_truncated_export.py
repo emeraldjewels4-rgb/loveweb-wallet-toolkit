@@ -145,7 +145,7 @@ def main() -> int:
 
         return keyless
 
-    document, capped = client.walk_export(fetch, listing, 2)
+    document, capped = client.walk_export(fetch, listing)
     check(capped == [("cjd.cjd_source", 1)],
           f"capped names the table and the row it got ({capped})")
     check(document["rows"] == 4,

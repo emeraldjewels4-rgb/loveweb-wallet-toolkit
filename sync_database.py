@@ -151,13 +151,14 @@ def call(url, key, payload=None):
         sys.exit("%s did not answer with JSON: %s" % (url, body[:200]))
 
 
-def walk_export(fetch, listing, page_size):
+def walk_export(fetch, listing):
     """Every page of every table, assembled into the document collect() merges.
 
     `listing` is ?action=tables: what there is, and which column a page of it is
     ordered by. `fetch(label, table, after)` asks the host for one page and is the
     only part that touches the network, which is why this can be run against
-    recorded pages.
+    recorded pages. How many rows that page holds is the fetch's business: this
+    loop only knows that `more` means ask again.
 
     A table with a cursor is walked until the host says there is no more, so a
     table larger than a page is read whole -- the page size stops being a limit on
@@ -443,7 +444,7 @@ def main():
 
         return call(url, key)
 
-    export, capped = walk_export(fetch, listing, cap)
+    export, capped = walk_export(fetch, listing)
 
     # Before anything is merged, and before the snapshot is overwritten with a
     # prefix: a table that could not be walked means the export is not the whole
