@@ -97,7 +97,7 @@ def walk(report: dict, listing: dict, asks: list | None = None) -> tuple[dict, l
 
         return single
 
-    return client.walk_export(fetch, listing, 2)
+    return client.walk_export(fetch, listing)
 
 
 def merged_text(document: dict) -> str:
@@ -224,7 +224,7 @@ def main() -> int:
         return {"rows": [], "more": True, "next": None}
 
     try:
-        client.walk_export(stuck, broken, 10)
+        client.walk_export(stuck, broken)
         check(False, "a page claiming more with no cursor is refused")
     except ValueError as exc:
         check("says there is more but gave no cursor" in str(exc),
