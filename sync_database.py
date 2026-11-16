@@ -192,21 +192,32 @@ ROUTE_STATUS_MEANING = {
          "key, so the value in .sandbox/import.key is not the one it holds",
     400: "a route older than ?action=ping (HTTP 400): the file is there but does "
          "not know this action, so it predates this client",
-    500: "a file that landed broken (HTTP 500): db_sync.php is there and failed "
-         "while running -- the copy is damaged, or one of the files it requires "
-         "(db.php, keys.php, merge.php) is not beside it",
 }
+
+# The rest of 5xx is one answer, not four: the server was reached, the file was
+# found, and running it failed. The status stays in the line because it says which
+# failure it was -- 500 is PHP dying on a damaged copy or a missing include, while
+# 502 and 504 come from the proxy in front of it and mean something else to check
+# first -- but the reader is pointed at the same place either way.
+ROUTE_SERVER_ERROR_MEANING = (
+    "a file that landed broken (HTTP %d): db_sync.php is there and the host failed "
+    "running it -- the copy is damaged, or one of the files it requires (db.php, "
+    "keys.php, merge.php) is not beside it. A 502 or 504 comes from the proxy in "
+    "front of PHP instead, so check that before re-uploading")
 
 
 def route_status_problem(status, detail=""):
     """What HTTP <status> from ?action=ping means, with the host's words kept.
 
-    The four statuses this route answers with have four different fixes, and the
-    raw number alone sends the reader to the wrong one -- a 404 is a toolkit that
-    was never deployed, not a request that was sent badly. The detail stays on the
-    end of the line, because the host's own words are the evidence for the name.
+    The answers this route gives have different fixes, and the raw number alone
+    sends the reader to the wrong one -- a 404 is a toolkit that was never
+    deployed, not a request that was sent badly, and a 5xx is a file that is there
+    and broken rather than a route that is missing. The detail stays on the end of
+    the line, because the host's own words are the evidence for the name.
     """
     meaning = ROUTE_STATUS_MEANING.get(status)
+    if meaning is None and isinstance(status, int) and 500 <= status <= 599:
+        meaning = ROUTE_SERVER_ERROR_MEANING % status
     if meaning is None:
         meaning = ("the host answered HTTP %s to ?action=ping, which this client "
                    "has no name for" % (status,))
