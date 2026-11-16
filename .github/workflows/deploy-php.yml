@@ -52,6 +52,31 @@ jobs:
             php -l "$file"
           done
 
+      # The action's own message for this is "Input required and not supplied:
+      # server", which names neither the secret nor the cause -- three runs failed
+      # on it before anyone traced it to Settings -> Secrets. Name them here, and
+      # say what they must be: the FTP account is chrooted to public_html/toolkit,
+      # so these are that account's credentials, not the cPanel login.
+      - name: Refuse to deploy without the FTP secrets
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in FTP_SERVER FTP_USERNAME FTP_PASSWORD; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::deploy php is missing repository secret(s):$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            echo "FTP_USERNAME is the FTP account chrooted to public_html/toolkit,"
+            echo "not the cPanel login. Nothing was uploaded; the site is unchanged."
+            exit 1
+          fi
+          echo "ftp secrets present: server, username, password"
+
       - name: Publish php/ over FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
