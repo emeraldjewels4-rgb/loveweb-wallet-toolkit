@@ -171,6 +171,18 @@ def main() -> int:
           "its sha256 is the file that is running, byte for byte")
     check(payload.get("bytes") == route_php.stat().st_size,
           "and its size, so a short copy is visible without hashing anything")
+    # The route is four files. Hashing the entry point alone answered "matches"
+    # while keys.php, where row_key() lives, could be missing.
+    files = payload.get("files") or {}
+    check(set(files) == {"db_sync.php", "db.php", "keys.php", "merge.php"},
+          f"and a manifest of the whole route ({len(files)} files: {sorted(files)})")
+    php_dir = ROOT / "php"
+    wrong = [name for name, entry in files.items()
+             if not isinstance(entry, dict) or entry.get("present") is not True
+             or entry.get("sha256") != hashlib.sha256((php_dir / name).read_bytes()).hexdigest()
+             or entry.get("bytes") != (php_dir / name).stat().st_size]
+    check(wrong == [],
+          f"each hashed as the copy here, so the route a client verifies is the one it uploads ({wrong})")
     check(ping.get("written") == 0 and payload.get("route") == "db_sync.php",
           "and it answers without touching a database")
 

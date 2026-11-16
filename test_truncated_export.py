@@ -106,6 +106,11 @@ def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple
         "version": 3,
         "sha256": hashlib.sha256(route_php.read_bytes()).hexdigest(),
         "bytes": route_php.stat().st_size,
+        "files": {name: {
+            "sha256": hashlib.sha256((ROOT / "php" / name).read_bytes()).hexdigest(),
+            "bytes": (ROOT / "php" / name).stat().st_size,
+            "present": True,
+        } for name in client.ROUTE_FILES},
     }
 
     saved = (client.call, client.probe_route, client.SNAPSHOT, client.import_key, sys.argv)

@@ -36,7 +36,10 @@ Check
     that landed half-written answers the next real request with a 500 that names
     nothing, and the export is where that surfaces, so the run stops here instead
     and says which half of the comparison disagreed -- stale, incomplete, or a
-    version below ROUTE_VERSION, the floor this client reads pages against. A host
+    version below ROUTE_VERSION, the floor this client reads pages against. It
+    compares the whole route, not the file that answers: db_sync.php and the
+    three it requires, so a host left running an older merge.php or without
+    keys.php is named rather than passed. A host
     older than the ping is a host the export can still read, so --skip-route-check
     goes on anyway and says that it did; --skip-preflight is the same trade.
 
@@ -90,10 +93,17 @@ PREVIEW_URL = BASE + "/preview.php?network=amoy"
 # one (--no-upload, or a route patched in place).
 ROUTE_VERSION = 3
 
-# The files this feature is made of. db.php and preview.php changed with it, so
-# they go up too: a route that reads a table nothing creates fails on the host
-# while looking perfectly correct here.
-UPLOADS = ("db_sync.php", "db.php", "preview.php")
+# The files this feature is made of, and the route itself is four of them:
+# db_sync.php requires db.php, keys.php and merge.php, and the work is split --
+# row_key() lives in keys.php, the merge rules in merge.php. Uploading only the
+# entry point left the host running code this client never sent, while the ping
+# (which hashed that one file) said the route matched. preview.php changed with
+# the route as well and goes up too.
+UPLOADS = ("db_sync.php", "db.php", "keys.php", "merge.php", "preview.php")
+
+# What ?action=ping reports under `files`: the route's own files. Named here so
+# that adding a file to the route is a deliberate edit on both sides.
+ROUTE_FILES = ("db_sync.php", "db.php", "keys.php", "merge.php")
 
 # One request carries about this much JSON. PHP's post_max_size is 8 MB by
 # default; staying well under it is cheaper than discovering it by 413.
@@ -232,6 +242,42 @@ def route_problems(ping, path):
                         "export reads" % (version, ROUTE_VERSION))
     # A host ahead of this client is accepted: the contract only grows between
     # versions, and the sha256 comparison is what holds an upload to this file.
+
+    # The route is four files, so four are compared. Checking only the one
+    # that answers says the host runs this code while keys.php -- where
+    # row_key() lives -- may be missing or older, and that surfaces as a
+    # failed request in the middle of an export rather than here.
+    manifest = ping.get("files")
+    if not isinstance(manifest, dict):
+        problems.append("?action=ping reported no file manifest, so db.php, "
+                        "keys.php and merge.php on the host cannot be compared"
+                        " with theirs")
+        return problems
+    for name in ROUTE_FILES:
+        if name == path.name:
+            continue  # compared just above, with the advice about the upload
+        entry = manifest.get(name)
+        entry = entry if isinstance(entry, dict) else {}
+        local = path.parent / name
+        if not local.is_file():
+            problems.append("this checkout has no %s, so the host's copy cannot"
+                            " be compared" % name)
+        elif not entry.get("present", entry.get("sha256") is not None):
+            problems.append("%s is not on the host: db_sync.php requires it, so"
+                            " the route fails at the first request that reaches"
+                            " it" % name)
+        else:
+            want = hashlib.sha256(local.read_bytes()).hexdigest()
+            if entry.get("sha256") != want:
+                problems.append("%s on the host is a different file: it reports"
+                                " sha256 %s, this one is %s -- an older copy, or an"
+                                " upload that did not replace it"
+                                % (name, str(entry.get("sha256"))[:12], want[:12]))
+            elif entry.get("bytes") not in (None, local.stat().st_size):
+                problems.append("%s on the host is %s bytes and this one is %d:"
+                                " the upload is incomplete"
+                                % (name, entry.get("bytes"),
+                                   local.stat().st_size))
 
     return problems
 
@@ -543,8 +589,9 @@ def main():
                       "run without it to replace the file, or pass --skip-route-check to use "
                       "the route that is there")
             sys.exit(1)
-        print("  route: %s version %s, sha256 %s (%s bytes) matches the upload"
-              % (ping.get("route"), ping.get("version"), str(ping.get("sha256"))[:12],
+        print("  route: %s version %s, sha256 %s (%s bytes) matches the upload, "
+              "and so do db.php, keys.php and merge.php" %
+              (ping.get("route"), ping.get("version"), str(ping.get("sha256"))[:12],
                  ping.get("bytes")))
 
     cap = max(1, min(20000, args.limit))

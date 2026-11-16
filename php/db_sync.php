@@ -766,6 +766,44 @@ function database_report(): array
 }
 
 /**
+ * Every file this route is made of, in the order it loads them.
+ *
+ * db_sync.php requires db.php, keys.php and merge.php, and the work is split
+ * across them: row_key() comes from keys.php, the merge rules from merge.php, the
+ * connection from db.php. A ping that hashed only the entry point would answer
+ * "the route matches" about one quarter of the code -- and say it while keys.php
+ * was missing, which is the file the first export needs.
+ */
+const SYNC_REQUIRED_FILES = array('db_sync.php', 'db.php', 'keys.php', 'merge.php');
+
+/**
+ * The sha256 and size of each required file, as it sits next to the route.
+ *
+ * `present` is stated rather than inferred from a null hash: a file that cannot
+ * be read and a file that is not there give the same comparison result, and the
+ * difference is worth having in the reply.
+ *
+ * @return array<string,array{sha256:?string,bytes:?int,present:bool}>
+ */
+function route_manifest(?string $entry = null): array
+{
+    $dir = dirname($entry ?? __FILE__);
+    $files = array();
+    foreach (SYNC_REQUIRED_FILES as $name) {
+        $path = $dir . '/' . $name;
+        $sha = @hash_file('sha256', $path);
+        $size = @filesize($path);
+        $files[$name] = array(
+            'sha256' => $sha === false ? null : $sha,
+            'bytes' => $size === false ? null : $size,
+            'present' => is_file($path),
+        );
+    }
+
+    return $files;
+}
+
+/**
  * What this file is, as the host sees it: ?action=ping.
  *
  * The sha256 is of the file that is running -- `$file` defaults to this one -- so
@@ -773,6 +811,10 @@ function database_report(): array
  * and a client that knows what it uploaded can tell the difference before it asks
  * for a listing. `bytes` is the same fact by size, which is what a truncated FTP
  * STOR leaves behind and what a short file's own hash cannot make obvious.
+ *
+ * `files` is the same fact for the whole route: every file db_sync.php requires,
+ * so a client that uploaded four of them compares four, and a host running an
+ * older merge.php or missing keys.php is named rather than passed over.
  *
  * No database is touched, and no row is read: this answers on a host whose
  * databases are all down, which is exactly when the next request would otherwise
@@ -792,6 +834,9 @@ function route_identity(?string $file = null): array
         'version' => SYNC_ROUTE_VERSION,
         'sha256' => $sha === false ? null : $sha,
         'bytes' => $size === false ? null : $size,
+        // The whole route, not only the file that answers: a client that
+        // uploaded four files can see which of them the host is running.
+        'files' => route_manifest($file),
         'generated_at' => gmdate('c'),
     );
 }
