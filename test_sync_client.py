@@ -296,6 +296,12 @@ def main() -> int:
         "version": 3,
         "sha256": hashlib.sha256(route_php.read_bytes()).hexdigest(),
         "bytes": route_php.stat().st_size,
+        # The route is four files, and the ping says which copies it is running.
+        "files": {name: {
+            "sha256": hashlib.sha256((route_php.parent / name).read_bytes()).hexdigest(),
+            "bytes": (route_php.parent / name).stat().st_size,
+            "present": True,
+        } for name in client.ROUTE_FILES},
     }
     # A hand-bumped number is only worth checking if it is the same number on both
     # sides, so the client's floor is compared with the constant in the file.
@@ -334,6 +340,29 @@ def main() -> int:
     versionless = client.route_problems(dict(ping, version=None), route_php)
     check(len(versionless) == 1 and "no version" in versionless[0],
           "and a ping with no version cannot say what it is running, which is a problem")
+
+    # One of the four files can be wrong while db_sync.php is perfect, which is
+    # the case an entry-point hash cannot see: each file is named on its own.
+    stale_merge = dict(ping, files=dict(ping["files"], **{
+        "merge.php": {"sha256": "cd" * 32, "bytes": 12, "present": True}}))
+    stale_lines = client.route_problems(stale_merge, route_php)
+    check(len(stale_lines) == 1 and stale_lines[0].startswith("merge.php")
+          and "cdcdcdcdcdcd" in stale_lines[0],
+          f"a host running a different merge.php is named by that file ({stale_lines})")
+
+    absent = dict(ping, files=dict(ping["files"], **{
+        "keys.php": {"sha256": None, "bytes": None, "present": False}}))
+    absent_lines = client.route_problems(absent, route_php)
+    check(len(absent_lines) == 1 and "keys.php is not on the host" in absent_lines[0],
+          "and one with no keys.php names it as missing, not as different")
+
+    bare = {key: value for key, value in ping.items() if key != "files"}
+    bare_lines = client.route_problems(bare, route_php)
+    check(len(bare_lines) == 1 and "no file manifest" in bare_lines[0],
+          "a ping with no manifest is refused: three of the four files would go uncompared")
+
+    check(set(client.ROUTE_FILES) <= set(client.UPLOADS),
+          f"and every file the route requires is one the sync uploads ({list(client.UPLOADS)})")
 
     # The whole point of asking first: nothing is read from a host that is not
     # running this file, so the check has to come before the listing request.
