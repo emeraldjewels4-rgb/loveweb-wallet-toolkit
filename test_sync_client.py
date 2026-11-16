@@ -372,6 +372,49 @@ def main() -> int:
     check(0 <= ping_at < listing_at,
           f"and main() asks for the ping before the listing ({ping_at} < {listing_at})")
 
+    section("a status from ?action=ping, told apart")
+    # probe_route is the one place an HTTP failure becomes a sentence, so the four
+    # answers are driven here rather than through main(). Each has a different
+    # fix, and one generic line sent a reader to the wrong one -- a 404 read like
+    # a malformed request when it means the toolkit was never deployed.
+    saved_open = client.urllib.request.urlopen
+
+    def probe_status(status, body=b"<html>no toolkit here</html>"):
+        def fake_open(request, timeout=None):
+            raise client.urllib.error.HTTPError(request.full_url, status, "x", {},
+                                                io.BytesIO(body))
+        client.urllib.request.urlopen = fake_open
+        try:
+            return client.probe_route(
+                "https://host.invalid/toolkit/db_sync.php?action=ping", "a-test-key")
+        finally:
+            client.urllib.request.urlopen = saved_open
+
+    payload, problem = probe_status(404)
+    check(payload is None and problem.startswith("not deployed (HTTP 404)")
+          and "no toolkit here" in problem,
+          f"404 is a toolkit that was never deployed, and keeps the host's words "
+          f"({problem[:44]}...)")
+
+    payload, problem = probe_status(403)
+    check(payload is None and problem.startswith("wrong key on the host (HTTP 403)"),
+          "403 is db_sync.php refusing the key, not a route that is missing")
+
+    payload, problem = probe_status(400)
+    check(payload is None
+          and problem.startswith("a route older than ?action=ping (HTTP 400)"),
+          "400 is a db_sync.php that predates the ping")
+
+    payload, problem = probe_status(
+        500, b"<b>Fatal error</b>: require_once(): Failed opening required 'keys.php'")
+    check(payload is None and problem.startswith("a file that landed broken (HTTP 500)")
+          and "keys.php" in problem,
+          "500 is a file that landed broken, with the host's fatal left on the line")
+
+    payload, problem = probe_status(502)
+    check(payload is None and "has no name for" in problem,
+          "and an unknown status names its number instead of guessing at a meaning")
+
     section("--skip-route-check, for a host that predates the ping")
     # The oldest thing a pre-ping route can answer: it has no ping, so it would be
     # refused. The flag is the way past that, and it has to say it went past.

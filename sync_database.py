@@ -180,6 +180,40 @@ def call(url, key, payload=None):
         sys.exit("%s did not answer with JSON: %s" % (url, body[:200]))
 
 
+# What a status from ?action=ping means, named once because the four have four
+# different fixes and one generic sentence made all of them read like a malformed
+# request. A 404 in particular is not a problem with the request at all: it is the
+# web server saying there is nothing at that path, which is what an undeployed
+# toolkit looks like from here.
+ROUTE_STATUS_MEANING = {
+    404: "not deployed (HTTP 404): the host has nothing at that address, so "
+         "db_sync.php is not missing a piece -- nothing has been uploaded there",
+    403: "wrong key on the host (HTTP 403): db_sync.php is there and refused the "
+         "key, so the value in .sandbox/import.key is not the one it holds",
+    400: "a route older than ?action=ping (HTTP 400): the file is there but does "
+         "not know this action, so it predates this client",
+    500: "a file that landed broken (HTTP 500): db_sync.php is there and failed "
+         "while running -- the copy is damaged, or one of the files it requires "
+         "(db.php, keys.php, merge.php) is not beside it",
+}
+
+
+def route_status_problem(status, detail=""):
+    """What HTTP <status> from ?action=ping means, with the host's words kept.
+
+    The four statuses this route answers with have four different fixes, and the
+    raw number alone sends the reader to the wrong one -- a 404 is a toolkit that
+    was never deployed, not a request that was sent badly. The detail stays on the
+    end of the line, because the host's own words are the evidence for the name.
+    """
+    meaning = ROUTE_STATUS_MEANING.get(status)
+    if meaning is None:
+        meaning = ("the host answered HTTP %s to ?action=ping, which this client "
+                   "has no name for" % (status,))
+    detail = (detail or "").strip()
+    return "%s: %s" % (meaning, detail) if detail else meaning
+
+
 def probe_route(url, key):
     """?action=ping, as data: (payload, problem) rather than an exit.
 
@@ -195,7 +229,7 @@ def probe_route(url, key):
             body = response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace").strip()[:200]
-        return None, "the host answered HTTP %s to ?action=ping: %s" % (exc.code, detail)
+        return None, route_status_problem(exc.code, detail)
     except (urllib.error.URLError, OSError) as exc:
         return None, "?action=ping could not be reached: %s" % exc
 
