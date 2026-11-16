@@ -6,6 +6,7 @@
     python sync_database.py --no-upload       # use the routes already on the host
     python sync_database.py --limit 5000      # rows per page of one table
     python sync_database.py --allow-truncated # merge a keyless table's first page
+    python sync_database.py --skip-route-check # use a host whose db_sync.php has no ping
 
 Download
     php/db_sync.php?action=export reads every table of every database named in
@@ -35,7 +36,9 @@ Check
     that landed half-written answers the next real request with a 500 that names
     nothing, and the export is where that surfaces, so the run stops here instead
     and says which half of the comparison disagreed -- stale, incomplete, or a
-    version below ROUTE_VERSION, the floor this client reads pages against.
+    version below ROUTE_VERSION, the floor this client reads pages against. A host
+    older than the ping is a host the export can still read, so --skip-route-check
+    goes on anyway and says that it did; --skip-preflight is the same trade.
 
 Upload
     The merged rows go back to php/db_sync.php?action=merge, which recomputes
@@ -492,6 +495,8 @@ def main():
                         help="merge a table the export's cap cut short (a prefix)")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="do not ask the host whether ALTER is granted before merging")
+    parser.add_argument("--skip-route-check", action="store_true",
+                        help="use whatever db_sync.php is on the host, even one with no ping")
     args = parser.parse_args()
 
     key = import_key()
@@ -516,20 +521,31 @@ def main():
     # running has to be this file. A db_sync.php that landed half-written answers
     # the next request with a 500 that names nothing, and the first export is where
     # that would surface -- after the upload has already replaced the working copy.
+    #
+    # Skippable for the reason the preflight is: a host that predates ?action=ping
+    # is a host the export can still read from, and refusing every run against it
+    # would be a check that blocks the work instead of describing it. What it must
+    # not do is pass quietly as if it had compared anything.
     route_php = PHP / "db_sync.php"
-    ping, problem = probe_route(SYNC_URL + "?action=ping", key)
-    problems = [problem] if problem else route_problems(ping, route_php)
-    if problems:
-        print("  route: the host is not running this %s:" % route_php.name)
-        for line in problems:
-            print("  route: %s" % line)
-        if args.no_upload:
-            print("  route: --no-upload sent nothing, so the host still has what it had; "
-                  "run without it to replace the file")
-        sys.exit(1)
-    print("  route: %s version %s, sha256 %s (%s bytes) matches the upload"
-          % (ping.get("route"), ping.get("version"), str(ping.get("sha256"))[:12],
-             ping.get("bytes")))
+    if args.skip_route_check:
+        print("  route: check skipped (--skip-route-check): the host's %s is not compared "
+              "with this one, so a stale or half-written copy would show up as a failed "
+              "request instead of here" % route_php.name)
+    else:
+        ping, problem = probe_route(SYNC_URL + "?action=ping", key)
+        problems = [problem] if problem else route_problems(ping, route_php)
+        if problems:
+            print("  route: the host is not running this %s:" % route_php.name)
+            for line in problems:
+                print("  route: %s" % line)
+            if args.no_upload:
+                print("  route: --no-upload sent nothing, so the host still has what it had; "
+                      "run without it to replace the file, or pass --skip-route-check to use "
+                      "the route that is there")
+            sys.exit(1)
+        print("  route: %s version %s, sha256 %s (%s bytes) matches the upload"
+              % (ping.get("route"), ping.get("version"), str(ping.get("sha256"))[:12],
+                 ping.get("bytes")))
 
     cap = max(1, min(20000, args.limit))
 

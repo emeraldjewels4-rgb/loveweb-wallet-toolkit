@@ -25,7 +25,9 @@ it labels unnoticed.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -106,6 +108,38 @@ def walk(report: dict, listing: dict, asks: list | None = None) -> tuple[dict, l
 
     return client.walk_export(fetch, listing)
 
+
+
+def run_main(argv: list[str], ping: dict, asked: list[str]) -> tuple[object, str]:
+    """client.main() with the host replaced by a recorder.
+
+    `call` records the URL and then stops the run, so what is asserted is how far
+    main() got -- past the route check or not -- without needing a fake for the
+    merge. `probe_route` records its URL too, so "the ping was skipped" is a fact
+    about requests rather than about the text on screen.
+    """
+    def fake_call(url, key, payload=None):
+        asked.append(url)
+        raise SystemExit("fake host: stopped at %s" % url.rsplit("/db_sync.php", 1)[-1][:40])
+
+    def fake_probe(url, key):
+        asked.append(url)
+        return ping, None
+
+    saved = (client.call, client.probe_route, client.import_key, sys.argv)
+    client.call, client.probe_route = fake_call, fake_probe
+    client.import_key = lambda: "a-test-key"
+    sys.argv = ["sync_database.py"] + argv
+    out = io.StringIO()
+    code: object = 0
+    try:
+        with contextlib.redirect_stdout(out):
+            client.main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else exc.code
+    finally:
+        client.call, client.probe_route, client.import_key, sys.argv = saved
+    return code, out.getvalue()
 
 def merged_text(document: dict) -> str:
     """What the client would merge from a document, as text, for comparison."""
@@ -308,6 +342,27 @@ def main() -> int:
     listing_at = main_source.find('listing = call(SYNC_URL + "?action=tables"')
     check(0 <= ping_at < listing_at,
           f"and main() asks for the ping before the listing ({ping_at} < {listing_at})")
+
+    section("--skip-route-check, for a host that predates the ping")
+    # The oldest thing a pre-ping route can answer: it has no ping, so it would be
+    # refused. The flag is the way past that, and it has to say it went past.
+    stale = {"action": "tables"}
+
+    asked: list[str] = []
+    code, out = run_main(["--no-upload", "--skip-preflight", "--skip-route-check"], stale, asked)
+    check("route: check skipped (--skip-route-check)" in out,
+          "the skipped check says so, instead of passing for a check that ran")
+    check(not any("action=ping" in url for url in asked),
+          f"and no ping is asked for at all ({[url.rsplit('/', 1)[-1][:24] for url in asked]})")
+    check(bool(asked) and "action=tables" in asked[0],
+          "the run goes straight on to the listing")
+
+    asked = []
+    code, out = run_main(["--no-upload", "--skip-preflight"], stale, asked)
+    check(code == 1 and "route: the host is not running this db_sync.php" in out,
+          f"without the flag the same host is refused, as before ({code})")
+    check(not any("action=tables" in url for url in asked),
+          "and nothing is listed from it, which is what the flag overrides")
 
     section("the one length in a page")
     source = CLIENT.read_text(encoding="utf-8", errors="replace")
