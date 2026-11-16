@@ -249,6 +249,63 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # cursor_column() decides how a table is paged by reading COLUMN_KEY from
+  # information_schema, and every offline probe answers that from
+  # tests/php/mysqli_stub.php -- a stub that can only agree with our assumption
+  # about how a catalogue reports a primary, a unique key or a plain column. This
+  # leg asks a real server instead, so it is deliberately outside the matrix: it
+  # needs a service, and adding its checks to each interpreter's count would make
+  # the four legs disagree in `counts` for no reason.
+  mariadb:
+    name: export against a real mariadb
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      db:
+        # The LTS line, which is what a host is most likely to run.
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: probe-root
+          MARIADB_DATABASE: toolkit_probe
+          MARIADB_USER: toolkit
+          MARIADB_PASSWORD: probe
+        ports:
+          - 3306:3306
+        # --innodb_initialized on purpose: the port opens before InnoDB has
+        # finished recovering, and a probe that connected early would read a
+        # catalogue without the tables -- then fail for the wrong reason.
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # mysqlnd + mysqli, which is the driver php/db.php targets on the host. The
+      # probe exits 2 when the extension is absent, so a leg that could not load
+      # it fails here rather than passing without connecting.
+      - name: Install PHP with mysqli
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends php-cli php-mysql
+          php -v | head -1
+          php -m | grep -qx mysqli
+          echo "mysqli loaded"
+
+      - name: List the tables, then walk two pages
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: toolkit
+          DB_PASSWORD: probe
+          DB_NAME: toolkit_probe
+        run: php tests/php/mariadb_probe.php
+
   # Every leg runs the same suites, so every leg must report the same counts.
   # That claim used to be verified by reading four logs by hand; this compares the
   # artifacts the legs uploaded and fails when one of them disagrees. It needs

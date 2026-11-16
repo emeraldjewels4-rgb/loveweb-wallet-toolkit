@@ -873,6 +873,8 @@ It looks for `PHP_BIN`, then `php` on `PATH`, then a development copy at
 that verified nothing must not report success. CI installs `php-cli` before running
 it. No network, no host and no database are involved.
 
+**One job asks a real server what a primary key looks like.** `mariadb` in the same workflow starts `mariadb:11.4` as a service and runs [tests/php/mariadb_probe.php](tests/php/mariadb_probe.php) with `php-mysql`, because `cursor_column()` decides how a table is paged from `information_schema.COLUMN_KEY` and every offline probe answers that from a stub -- and a stub can only agree with our assumption about how a catalogue reports a primary key, a unique key or a plain column. The probe creates four tables (one with a single-column primary key, one with no key but an `id`, one with only a UNIQUE key, one with neither), asserts the `cursor` the listing reports for each, walks the three-row table two pages deep with a cap of two, and reads the keyless table once to see `paged: false` arrive from the server rather than from a fixture. It exits 2 when there is no server or no mysqli, which this leg counts as a failure: a leg that could not connect verified nothing. It is outside the matrix deliberately -- its checks belong to one job, and folding them into each interpreter's count would make the four legs disagree for no reason.
+
 **The matrix is pinned, not left to the resolver.** [constraints.txt](constraints.txt)
 is the exact resolved closure (65 entries, 64 of them installed on a Linux leg --
 `pywin32` is Windows-only) and governs every interpreter,

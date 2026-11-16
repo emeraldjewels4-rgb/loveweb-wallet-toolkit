@@ -195,8 +195,10 @@ def main() -> int:
     counted = re.search(r"(\w+) identical jobs instead of (\w+)", text)
     legs = WORDS.get(counted.group(2).lower()) if counted else None
     doubled = WORDS.get(counted.group(1).lower()) if counted else None
+    # `mariadb` is not a leg of the matrix: it is the one job that needs a service,
+    # so it runs once rather than four times. The order is the run order.
     check(legs == len(matrix) and doubled == 2 * len(matrix)
-          and jobs == ["tests", "counts"],
+          and jobs == ["tests", "mariadb", "counts"],
           "README says %s jobs instead of %s; the workflow runs %s across "
           "%d interpreter(s)"
           % (counted.group(1) if counted else "nothing",
