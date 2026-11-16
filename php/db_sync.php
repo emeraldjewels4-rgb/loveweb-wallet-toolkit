@@ -188,12 +188,20 @@ function configured_databases(): array
 }
 
 /**
- * The column a table is paged by: its single-column primary key, else `id`.
+ * The column a table is paged by: the one column the catalogue marks as its key.
  *
- * A cursor has to be unique and ordered, and a primary key is the only column a
- * database promises that for. Null means the table has neither, so it can only be
- * read one page up to the cap -- which the reply says with `paged: false` instead
- * of pretending the table was read whole.
+ * A cursor has to be unique and ordered, and a key is the only column a database
+ * promises that for. The query asks for COLUMN_KEY = 'PRI' rather than for a
+ * declared PRIMARY KEY, because MySQL and MariaDB report a UNIQUE index as PRI
+ * when it cannot contain NULL and the table has no PRIMARY KEY ("A UNIQUE index
+ * may be displayed as PRI ...", INFORMATION_SCHEMA.COLUMNS): that column is
+ * unique and never null, which is a cursor in every way that matters. A nullable
+ * UNIQUE column stays UNI and is not chosen, because `WHERE col > 'x'` never
+ * returns a NULL and paging by it would drop those rows without saying so.
+ *
+ * Null means the table has neither, so it can only be read one page up to the cap
+ * -- which the reply says with `paged: false` instead of pretending the table was
+ * read whole.
  */
 function cursor_column(mysqli $link, string $database, string $table): ?string
 {
