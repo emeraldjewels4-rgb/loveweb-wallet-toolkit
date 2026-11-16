@@ -411,9 +411,16 @@ def main() -> int:
           and "keys.php" in problem,
           "500 is a file that landed broken, with the host's fatal left on the line")
 
+    # 502 is not 500, but both mean the same thing to a reader: the file is there
+    # and running it failed. The status stays in the line because it says which
+    # failure it was.
     payload, problem = probe_status(502)
+    check(payload is None and problem.startswith("a file that landed broken (HTTP 502)"),
+          "and the whole 5xx range is a file that landed broken, each with its own status")
+
+    payload, problem = probe_status(429)
     check(payload is None and "has no name for" in problem,
-          "and an unknown status names its number instead of guessing at a meaning")
+          "while a status outside those families names its number instead of guessing")
 
     section("--skip-route-check, for a host that predates the ping")
     # The oldest thing a pre-ping route can answer: it has no ping, so it would be
