@@ -13,9 +13,11 @@ the next page with the cursor the last one returned, that it stops when the host
 says there is nothing more, and that a reply claiming more with no cursor is named
 rather than looped on forever.
 
-It also holds the route check to its three answers: a ping that names the file
-that is here passes, and a stale route, a different file and a short copy are
-three different messages rather than one "it failed".
+It also holds the route check to its answers: a ping that names the file that is
+here passes, and a stale route, a different file, a short copy and a contract
+version below the client's floor are different messages rather than one "it
+failed" -- including the two numbers, so the version cannot disagree with the file
+it labels unnoticed.
 
     python test_sync_client.py
 """
@@ -261,8 +263,26 @@ def main() -> int:
         "sha256": hashlib.sha256(route_php.read_bytes()).hexdigest(),
         "bytes": route_php.stat().st_size,
     }
+    # A hand-bumped number is only worth checking if it is the same number on both
+    # sides, so the client's floor is compared with the constant in the file.
+    declared = re.search(r"const SYNC_ROUTE_VERSION = (\d+);",
+                         route_php.read_text(encoding="utf-8"))
+    check(declared is not None and int(declared.group(1)) == client.ROUTE_VERSION,
+          f"the floor this client enforces is the route's own constant "
+          f"({client.ROUTE_VERSION} vs {declared.group(1) if declared else 'missing'})")
+
     check(client.route_problems(ping, route_php) == [],
           "a ping that reports this file's sha256 and size passes")
+
+    older = client.route_problems(dict(ping, version=client.ROUTE_VERSION - 1), route_php)
+    check(len(older) == 1
+          and "route version %d" % (client.ROUTE_VERSION - 1) in older[0]
+          and "needs %d or later" % client.ROUTE_VERSION in older[0],
+          f"a host below the floor is refused, naming both versions ({older[0][:46] if older else ''}...)")
+
+    newer = client.route_problems(dict(ping, version=client.ROUTE_VERSION + 1), route_php)
+    check(newer == [],
+          "and a host ahead of the client is accepted, since the contract only grows")
 
     stale = client.route_problems({"action": "tables"}, route_php)
     check(len(stale) == 1 and "older than this client" in stale[0],

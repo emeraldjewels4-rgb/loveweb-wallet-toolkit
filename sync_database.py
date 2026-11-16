@@ -34,7 +34,8 @@ Check
     running: its contract version, the sha256 of the file, and its size. A route
     that landed half-written answers the next real request with a 500 that names
     nothing, and the export is where that surfaces, so the run stops here instead
-    and says which half of the comparison disagreed -- stale, or incomplete.
+    and says which half of the comparison disagreed -- stale, incomplete, or a
+    version below ROUTE_VERSION, the floor this client reads pages against.
 
 Upload
     The merged rows go back to php/db_sync.php?action=merge, which recomputes
@@ -77,6 +78,14 @@ FTP_JSON = ROOT / ".sandbox" / "ftp.json"
 BASE = "https://fiatgod.x10.mx/toolkit"
 SYNC_URL = BASE + "/db_sync.php"
 PREVIEW_URL = BASE + "/preview.php?network=amoy"
+
+# The route contract this client speaks, as ?action=ping reports it. Kept equal to
+# SYNC_ROUTE_VERSION in php/db_sync.php, and asserted against that constant by
+# test_sync_client.py, so a hand-bumped number cannot drift away from the file it
+# labels. A host below this floor may answer pages without the fields the walk
+# reads, which the sha256 alone would not explain on a host whose file is not this
+# one (--no-upload, or a route patched in place).
+ROUTE_VERSION = 3
 
 # The files this feature is made of. db.php and preview.php changed with it, so
 # they go up too: a route that reads a table nothing creates fails on the host
@@ -186,10 +195,11 @@ def probe_route(url, key):
 def route_problems(ping, path):
     """Why the host is not running `path`, as lines; empty when it is.
 
-    The three failures worth naming separately, because they have different fixes:
-    the host does not answer ping at all (its route predates this one), it answers
-    with a different file (the upload did not replace it), or its copy is a
-    different size (the upload was cut short).
+    The failures worth naming separately, because they have different fixes: the host
+    does not answer ping at all (its route predates this one), it answers with a
+    different file (the upload did not replace it), its copy is a different size (the
+    upload was cut short), or it reports a contract version older than ROUTE_VERSION
+    (the fields this export reads are not all there, whatever the bytes say).
     """
     if not isinstance(ping, dict) or ping.get("action") != "ping":
         answered = ping.get("action") if isinstance(ping, dict) else type(ping).__name__
@@ -209,9 +219,16 @@ def route_problems(ping, path):
     if ping.get("bytes") not in (None, size):
         problems.append("the host's copy is %s bytes and this file is %d: the upload "
                         "is incomplete" % (ping.get("bytes"), size))
-    if not isinstance(ping.get("version"), int):
+    version = ping.get("version")
+    if not isinstance(version, int):
         problems.append("?action=ping reported no version (%r), so it cannot say what "
-                        "it is running" % (ping.get("version"),))
+                        "it is running" % (version,))
+    elif version < ROUTE_VERSION:
+        problems.append("the host speaks route version %d and this client needs %d or "
+                        "later: a page from that file may not carry the fields this "
+                        "export reads" % (version, ROUTE_VERSION))
+    # A host ahead of this client is accepted: the contract only grows between
+    # versions, and the sha256 comparison is what holds an upload to this file.
 
     return problems
 

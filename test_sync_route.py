@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -162,8 +163,10 @@ def main() -> int:
     route_php = ROOT / "php" / "db_sync.php"
     check(ping.get("status") == 200 and payload.get("action") == "ping",
           "?action=ping answers 200 with action=ping")
-    check(isinstance(payload.get("version"), int) and payload["version"] >= 1,
-          f"and a version number ({payload.get('version')!r})")
+    declared = re.search(r"const SYNC_ROUTE_VERSION = (\d+);",
+                         route_php.read_text(encoding="utf-8"))
+    check(declared is not None and payload.get("version") == int(declared.group(1)),
+          f"its version is the constant in that file ({payload.get('version')!r})")
     check(payload.get("sha256") == hashlib.sha256(route_php.read_bytes()).hexdigest(),
           "its sha256 is the file that is running, byte for byte")
     check(payload.get("bytes") == route_php.stat().st_size,
