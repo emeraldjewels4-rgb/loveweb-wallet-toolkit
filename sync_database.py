@@ -25,6 +25,14 @@ Download
     that were sent against the rows that were stored, and both are true. Pass
     --allow-truncated to merge what came and say so.
 
+Requests
+    Every request goes through one Host object, and main() takes one:
+    main(host=OtherHost()) is how the tests answer a run without a socket. It also
+    keeps a new request from breaking three fakes at once -- the suites used to
+    patch call, probe_route, upload, SNAPSHOT and import_key separately, so a
+    request none of them expected either slipped past a patch that was not
+    updated, or failed as if the client had misbehaved.
+
 Merge
     Rows are merged on the key db_sync.php computed for them, so the same row
     found in two databases collapses into one entry that records both sources.
@@ -327,6 +335,92 @@ def route_problems(ping, path):
     return problems
 
 
+class Host:
+    """Every request main() makes, in one object.
+
+    main() used to reach the host through five module-level names -- `call`,
+    `probe_route`, `upload`, `SNAPSHOT` and `import_key` -- and each suite patched
+    the ones it happened to need. A request the fakes had not heard of broke them
+    all at once: adding `?action=ping` did, and `--skip-route-check` needed a
+    fourth patch a few commits later. One substitutable object means a test hands
+    over a fake and every request goes through it, whether or not the fake has
+    thought about it.
+
+    The methods are the route's read and write actions, one per request, so the
+    set of things a fake has to answer is written down here rather than implied by
+    whatever main() happens to call.
+    """
+
+    def __init__(self, key=None, snapshot=None, base=None):
+        self.base = SYNC_URL if base is None else base
+        self.snapshot = SNAPSHOT if snapshot is None else snapshot
+        self._key = key
+
+    @property
+    def key(self):
+        # Read once, on first use: --help and a refusal that happens before the
+        # host is asked anything should not need import.key to exist.
+        if self._key is None:
+            self._key = import_key()
+        return self._key
+
+    def ping(self):
+        """?action=ping, as (payload, problem)."""
+        return probe_route(self.base + "?action=ping", self.key)
+
+    def report(self):
+        """?action=report: what the account may do, for the preflight."""
+        return call(self.base + "?action=report", self.key)
+
+    def listing(self):
+        """?action=tables: what there is, and the column each table pages by."""
+        return call(self.base + "?action=tables", self.key)
+
+    def page_url(self, label, table, after, limit):
+        """The export URL for one page. Separate so it can be checked unasked."""
+        url = "%s?action=export&table=%s.%s&limit=%d" % (
+            self.base, urllib.parse.quote(str(label)),
+            urllib.parse.quote(str(table)), limit)
+        if after is not None:
+            url += "&after=" + urllib.parse.quote(str(after))
+
+        return url
+
+    def page(self, label, table, after, limit):
+        """One page of one table."""
+        return call(self.page_url(label, table, after, limit), self.key)
+
+    def merge(self, rows, run):
+        """?action=merge: one batch, tagged with this run."""
+        return call(self.base + "?action=merge", self.key,
+                    {"rows": rows, "run": run})
+
+    def status(self, run=None):
+        """?action=status, scoped to a run or for every run."""
+        url = self.base + "?action=status"
+        if run is not None:
+            url += "&run=" + urllib.parse.quote(str(run))
+
+        return call(url, self.key)
+
+    def preview(self):
+        """The published digest: the same table, read by a different file."""
+        with urllib.request.urlopen(PREVIEW_URL, timeout=120) as response:
+            return (json.load(response) or {}).get("merged") or {}
+
+    def upload(self, name, dry_run=False):
+        """Send one file of the route over FTP."""
+        return upload(name, dry_run=dry_run)
+
+    def write_snapshot(self, data):
+        """Write the local record of the export, at whichever path."""
+        self.snapshot.parent.mkdir(parents=True, exist_ok=True)
+        self.snapshot.write_text(json.dumps(data, indent=1, sort_keys=True),
+                                 encoding="utf-8")
+
+        return self.snapshot
+
+
 def walk_export(fetch, listing):
     """Every page of every table, assembled into the document collect() merges.
 
@@ -573,7 +667,7 @@ def batches(rows, limit=BATCH_BYTES):
         yield batch
 
 
-def main():
+def main(host=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--limit", type=int, default=2000,
                         help="rows per page of one table (default 2000)")
@@ -590,12 +684,14 @@ def main():
                         help="use whatever db_sync.php is on the host, even one with no ping")
     args = parser.parse_args()
 
-    key = import_key()
+    # Everything below goes through this one object, so a test can replace the
+    # host without patching anything in this file.
+    host = Host() if host is None else host
 
     # Before anything is uploaded or sent: the host is the only party that knows
     # what the account may do, and a missing ALTER has a name worth printing.
     if not args.skip_preflight:
-        ok, lines = schema_preflight(call(SYNC_URL + "?action=report", key))
+        ok, lines = schema_preflight(host.report())
         for line in lines:
             print(line)
         if not ok:
@@ -606,7 +702,7 @@ def main():
         for name in UPLOADS:
             if not (PHP / name).is_file():
                 sys.exit("missing %s" % (PHP / name).relative_to(ROOT))
-            upload(name, dry_run=args.dry_run)
+            host.upload(name, dry_run=args.dry_run)
 
     # Before the listing, and before anything is read: the route that is actually
     # running has to be this file. A db_sync.php that landed half-written answers
@@ -623,7 +719,7 @@ def main():
               "with this one, so a stale or half-written copy would show up as a failed "
               "request instead of here" % route_php.name)
     else:
-        ping, problem = probe_route(SYNC_URL + "?action=ping", key)
+        ping, problem = host.ping()
         problems = [problem] if problem else route_problems(ping, route_php)
         if problems:
             print("  route: the host is not running this %s:" % route_php.name)
@@ -643,15 +739,10 @@ def main():
 
     # Phase one, then one page at a time. `after` is the last key the previous page
     # returned, so the page size bounds a request rather than the export.
-    listing = call(SYNC_URL + "?action=tables", key)
+    listing = host.listing()
 
     def fetch(label, table, after):
-        url = "%s?action=export&table=%s.%s&limit=%d" % (
-            SYNC_URL, urllib.parse.quote(str(label)), urllib.parse.quote(str(table)), cap)
-        if after is not None:
-            url += "&after=" + urllib.parse.quote(str(after))
-
-        return call(url, key)
+        return host.page(label, table, after, cap)
 
     export, capped = walk_export(fetch, listing)
 
@@ -683,8 +774,7 @@ def main():
     # what earlier runs had already stored.
     prev_keys = previous_keys()
     run = uuid.uuid4().hex
-    SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
-    SNAPSHOT.write_text(json.dumps({
+    snapshot = host.write_snapshot({
         "generated_at": export.get("generated_at"),
         "run": run,
         "cap": cap,
@@ -692,8 +782,10 @@ def main():
         "rows": len(merged),
         "digest": expected,
         "merged": sorted(merged.values(), key=lambda entry: entry["key"]),
-    }, indent=1, sort_keys=True), encoding="utf-8")
-    print("  snapshot: %s (%d bytes)" % (SNAPSHOT.relative_to(ROOT), SNAPSHOT.stat().st_size))
+    })
+    print("  snapshot: %s (%d bytes)"
+          % (snapshot.relative_to(ROOT) if ROOT in snapshot.parents else snapshot,
+             snapshot.stat().st_size))
 
     if args.dry_run:
         print("  upload: would send %d row(s), digest %s" % (len(merged), expected[:16]))
@@ -701,7 +793,7 @@ def main():
 
     stored = 0
     for batch in batches(payload_rows(merged)):
-        reply = call(SYNC_URL + "?action=merge", key, {"rows": batch, "run": run})
+        reply = host.merge(batch, run)
         stored += int(reply.get("accepted") or 0)
         print("  upload: sent %s, accepted %s, distinct %s"
               % (reply.get("received"), reply.get("accepted"), reply.get("distinct")))
@@ -710,14 +802,13 @@ def main():
         print("  done: %d row(s) uploaded" % stored)
         return
 
-    scoped = call("%s?action=status&run=%s" % (SYNC_URL, run), key).get("merged") or {}
-    accumulated = call(SYNC_URL + "?action=status", key).get("merged") or {}
+    scoped = host.status(run).get("merged") or {}
+    accumulated = host.status().get("merged") or {}
     ok, lines = verification(scoped, accumulated, set(merged), expected, prev_keys)
     for line in lines:
         print(line)
 
-    with urllib.request.urlopen(PREVIEW_URL, timeout=120) as response:
-        live = (json.load(response) or {}).get("merged") or {}
+    live = host.preview()
     print("  verify: preview reports %s row(s), digest %s"
           % (live.get("rows"), (live.get("digest") or "")[:16]))
     if live.get("rows") != accumulated.get("rows") or live.get("digest") != accumulated.get("digest"):

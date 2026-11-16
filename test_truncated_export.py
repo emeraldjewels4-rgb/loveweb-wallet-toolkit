@@ -78,23 +78,48 @@ def finish() -> int:
     return 0
 
 
+class RecordedHost(client.Host):
+    """The transport, answered from recorded replies rather than a socket.
+
+    Everything main() asks for goes through this one object, so a request added to
+    the client either lands in a method here or raises -- instead of slipping past
+    a patch of `client.call` that nobody updated.
+    """
+
+    def __init__(self, ping: dict, report: dict, listing: dict, snapshot: Path,
+                 snapshot_in_place: bool = False):
+        super().__init__(key="a-test-key", snapshot=snapshot)
+        self.ping_reply = ping
+        self.report_reply = report
+        self.listing_reply = listing
+        self.asked: list[str] = []
+
+    def report(self):
+        return {"databases": {"toolkit": {"merged_table": {
+            "exists": True, "has_run_token": True,
+            "privileges": {"alter": True, "create": True, "drop": True}}}}}
+
+    def ping(self):
+        return self.ping_reply, None
+
+    def listing(self):
+        return self.listing_reply
+
+    def page(self, label, table, after, limit):
+        # Matched on the URL the transport builds, so a wrong URL fails here.
+        url = self.page_url(label, table, after, limit)
+        self.asked.append(url)
+        if "table=journal." in url:
+            return self.report_reply["pages"]["second"] if "after=2" in url \
+                else self.report_reply["pages"]["first"]
+        if "table=cjd." in url:
+            return self.report_reply["keyless_capped"]
+        raise AssertionError("the client asked for something this test does not serve: %s" % url)
+
+
 def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple[int, str]:
     """Run the client's main() with the host replaced by recorded replies."""
     asked: list[str] = []
-
-    def fake_call(url, key, payload=None):
-        asked.append(url)
-        if "action=report" in url:
-            return {"databases": {"toolkit": {"merged_table": {
-                "exists": True, "has_run_token": True,
-                "privileges": {"alter": True, "create": True, "drop": True}}}}}
-        if "action=tables" in url:
-            return listing
-        if "action=export&table=journal." in url:
-            return report["pages"]["second"] if "after=2" in url else report["pages"]["first"]
-        if "action=export&table=cjd." in url:
-            return report["keyless_capped"]
-        raise AssertionError("the client asked for something this test does not serve: %s" % url)
 
     # The route check is a separate request on purpose (an HTTP failure there is a
     # message this run words, not call()'s generic one), so the fake host answers it
@@ -113,21 +138,18 @@ def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple
         } for name in client.ROUTE_FILES},
     }
 
-    saved = (client.call, client.probe_route, client.SNAPSHOT, client.import_key, sys.argv)
-    client.call, client.probe_route = fake_call, lambda url, key: (ping, None)
-    client.SNAPSHOT = snapshot
-    client.import_key = lambda: "a-test-key"
+    host = RecordedHost(ping, report, listing, snapshot)
+    saved = sys.argv
     sys.argv = ["sync_database.py"] + argv
     out = io.StringIO()
     code = 0
     try:
         with contextlib.redirect_stdout(out):
-            client.main()
+            client.main(host=host)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 0
     finally:
-        (client.call, client.probe_route, client.SNAPSHOT, client.import_key,
-         sys.argv) = saved
+        sys.argv = saved
     return code, out.getvalue()
 
 
