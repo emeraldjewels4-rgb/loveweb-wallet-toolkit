@@ -110,35 +110,51 @@ def walk(report: dict, listing: dict, asks: list | None = None) -> tuple[dict, l
 
 
 
+class RecordingHost(client.Host):
+    """The transport, with every request recorded and the run stopped at the listing.
+
+    A subclass rather than a mock of five module globals: whatever main() asks for
+    next, it asks this object, and a fake that has not heard of it fails loudly in
+    one place instead of silently serving a stale patch somewhere else.
+    """
+
+    key = "a-test-key"
+
+    def __init__(self, ping: dict):
+        super().__init__()
+        self.ping_reply = ping
+        self.asked: list[str] = []
+
+    def ping(self):
+        self.asked.append("db_sync.php?action=ping")
+        return self.ping_reply, None
+
+    def listing(self):
+        self.asked.append("db_sync.php?action=tables")
+        raise SystemExit("fake host: stopped at the listing")
+
+
 def run_main(argv: list[str], ping: dict, asked: list[str]) -> tuple[object, str]:
     """client.main() with the host replaced by a recorder.
 
-    `call` records the URL and then stops the run, so what is asserted is how far
-    main() got -- past the route check or not -- without needing a fake for the
-    merge. `probe_route` records its URL too, so "the ping was skipped" is a fact
-    about requests rather than about the text on screen.
+    `asked` records the requests that were made and then stops the run, so what is
+    asserted is how far main() got -- past the route check or not -- without
+    needing a fake for the merge. "The ping was skipped" is therefore a fact about
+    requests rather than about the text on screen.
     """
-    def fake_call(url, key, payload=None):
-        asked.append(url)
-        raise SystemExit("fake host: stopped at %s" % url.rsplit("/db_sync.php", 1)[-1][:40])
-
-    def fake_probe(url, key):
-        asked.append(url)
-        return ping, None
-
-    saved = (client.call, client.probe_route, client.import_key, sys.argv)
-    client.call, client.probe_route = fake_call, fake_probe
-    client.import_key = lambda: "a-test-key"
+    host = RecordingHost(ping)
+    host.asked = asked
+    saved = sys.argv
     sys.argv = ["sync_database.py"] + argv
     out = io.StringIO()
     code: object = 0
     try:
         with contextlib.redirect_stdout(out):
-            client.main()
+            client.main(host=host)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else exc.code
     finally:
-        client.call, client.probe_route, client.import_key, sys.argv = saved
+        sys.argv = saved
     return code, out.getvalue()
 
 def merged_text(document: dict) -> str:
@@ -366,11 +382,13 @@ def main() -> int:
 
     # The whole point of asking first: nothing is read from a host that is not
     # running this file, so the check has to come before the listing request.
-    main_source = CLIENT.read_text(encoding="utf-8")
-    ping_at = main_source.find("ping, problem = probe_route(SYNC_URL")
-    listing_at = main_source.find('listing = call(SYNC_URL + "?action=tables"')
-    check(0 <= ping_at < listing_at,
-          f"and main() asks for the ping before the listing ({ping_at} < {listing_at})")
+    # Asserted on the requests the run makes, not on the order of two strings in
+    # the source: a reordering that still asks the listing first would pass a
+    # grep and fail here.
+    asked: list[str] = []
+    run_main(["--no-upload", "--skip-preflight"], dict(ping), asked)
+    check(asked == ["db_sync.php?action=ping", "db_sync.php?action=tables"],
+          f"and main() asks for the ping before the listing ({asked})")
 
     section("a status from ?action=ping, told apart")
     # probe_route is the one place an HTTP failure becomes a sentence, so the four
@@ -421,6 +439,40 @@ def main() -> int:
     payload, problem = probe_status(429)
     check(payload is None and "has no name for" in problem,
           "while a status outside those families names its number instead of guessing")
+
+    section("the one object main() asks for everything")
+    # The transport exists so a new request cannot break three fakes at once. These
+    # checks are about the object itself: what it defaults to, and the URL it builds
+    # for a page -- which used to be assembled inline in main() and was untestable
+    # without a whole fake host.
+    plain = client.Host(key="a-key")
+    check(plain.base == client.SYNC_URL and plain.key == "a-key"
+          and plain.snapshot == client.SNAPSHOT,
+          f"the default host sends to SYNC_URL, at that snapshot path ({plain.base.split('toolkit')[-1]})")
+
+    check(plain.page_url("db one", "a b", 41, 500).endswith(
+              "?action=export&table=db%20one.a%20b&limit=500&after=41")
+          and plain.page_url("db", "t", None, 20000).endswith(
+              "?action=export&table=db.t&limit=20000"),
+          "and a page URL quotes the table and asks for `after` only when there is one")
+
+    # The failure this refactor exists to prevent: a request that bypasses the
+    # transport and reads a module global. Every global it could reach is replaced
+    # with one that raises, so a bypass fails here instead of in whichever suite
+    # happened not to patch that name.
+    def never(*args, **kwargs):
+        raise AssertionError("main() used a module global instead of the host")
+
+    saved = (client.call, client.probe_route, client.import_key, client.SNAPSHOT)
+    client.call = client.probe_route = client.import_key = never
+    client.SNAPSHOT = ROOT / "no-such-snapshot.json"
+    try:
+        asked: list[str] = []
+        code, out = run_main(["--no-upload", "--skip-preflight"], dict(ping), asked)
+    finally:
+        client.call, client.probe_route, client.import_key, client.SNAPSHOT = saved
+    check(asked == ["db_sync.php?action=ping", "db_sync.php?action=tables"],
+          f"and with a host supplied no module-level request is reached ({asked})")
 
     section("--skip-route-check, for a host that predates the ping")
     # The oldest thing a pre-ping route can answer: it has no ping, so it would be
