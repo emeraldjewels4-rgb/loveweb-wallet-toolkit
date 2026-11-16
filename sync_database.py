@@ -19,6 +19,12 @@ Download
     the export -- because each page resumes from the last key the previous one
     returned instead of starting again.
 
+    A table whose columns change between two pages -- an ALTER during the walk -- is
+    refused by name: collect() keys a row on its values, so the same row read in
+    two shapes becomes two entries on two keys, and the digest then counts it
+    twice while every check agrees. Nothing is missing, so the truncation rules
+    above would not catch it.
+
     A table with no primary key and no id column cannot be walked. It is read once,
     and if the page says there was more the run stops and names it rather than
     merging a prefix: the digest check cannot notice, since it compares the rows
@@ -421,6 +427,17 @@ class Host:
         return self.snapshot
 
 
+class TableChanged(Exception):
+    """A table's columns changed between two pages of the same walk.
+
+    collect() keys a row by its values, so the same row read under two column
+    sets arrives as two entries on two keys: the merge stores it twice, the
+    digest counts both, and every check downstream agrees with the doubled
+    number because both halves are real rows. It cannot be repaired after the
+    fact, so the walk stops where it notices.
+    """
+
+
 def walk_export(fetch, listing):
     """Every page of every table, assembled into the document collect() merges.
 
@@ -436,6 +453,12 @@ def walk_export(fetch, listing):
     key, no id) cannot be walked: it is read once and marked truncated when the
     page says there was more, which is the one case that still loses rows and the
     reason --allow-truncated still exists.
+
+    Every page is also compared with the first page of its own table: a walk that
+    spans an ALTER reads one table in two shapes, and a row on both sides of it
+    would be merged twice on two different keys. That is not a truncation --
+    nothing is missing and the digest is self-consistent -- so it raises
+    TableChanged instead of being handed on.
 
     Returns (document, capped) where capped names those tables as
     (database.table, rows read).
@@ -462,8 +485,24 @@ def walk_export(fetch, listing):
             rows = []
             after = None
             more = False
+            columns = None
+            page_number = 0
             while True:
                 page = fetch(label, table, after)
+                page_number += 1
+                seen = page.get("columns")
+                # A page that reports no columns cannot disagree with one that
+                # does; only a comparison of two lists is evidence of a change.
+                if isinstance(seen, list):
+                    if columns is None:
+                        columns = seen
+                    elif seen != columns:
+                        raise TableChanged(
+                            "%s.%s changed while it was being read: page %d of it "
+                            "reports columns %s, the first page reported %s. A row "
+                            "on both sides of that ALTER is merged twice, on two "
+                            "keys, and the digest then counts both"
+                            % (label, table, page_number, seen, columns))
                 rows.extend(page.get("rows") or [])
                 more = bool(page.get("more"))
                 after = page.get("next")
@@ -744,7 +783,13 @@ def main(host=None):
     def fetch(label, table, after):
         return host.page(label, table, after, cap)
 
-    export, capped = walk_export(fetch, listing)
+    try:
+        export, capped = walk_export(fetch, listing)
+    except TableChanged as exc:
+        print("  export: %s" % exc)
+        print("  export: refusing to merge; nothing was written and the snapshot "
+              "is untouched")
+        sys.exit(1)
 
     # Before anything is merged, and before the snapshot is overwritten with a
     # prefix: a table that could not be walked means the export is not the whole

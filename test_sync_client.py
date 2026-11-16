@@ -287,6 +287,67 @@ def main() -> int:
         check("says there is more but gave no cursor" in str(exc),
               f"a page claiming more with no cursor is named ({exc})")
 
+    section("a table that changes while it is being walked")
+    # An ALTER between two pages is not a truncation: nothing is missing and the
+    # digest is self-consistent -- it just counts one row twice, because collect()
+    # keys on the values and a new column makes a new key for the same row.
+    changing = {"databases": [{"database": "journal", "on": 1, "error": None,
+                              "tables": [{"table": "t", "columns": ["id"],
+                                          "cursor": "id"}]}]}
+    first_page = {"columns": ["id", "amount"], "rows": [{"key": "a"}],
+                  "more": True, "next": 1}
+    second_page = {"columns": ["id", "amount", "note"], "rows": [{"key": "b"}],
+                   "more": False}
+
+    def two_shapes(_label, _table, after):
+        return second_page if after == 1 else first_page
+
+    try:
+        client.walk_export(two_shapes, changing)
+        check(False, "a table whose columns change mid-walk is refused")
+    except client.TableChanged as exc:
+        check("journal.t changed while it was being read" in str(exc)
+              and "['id', 'amount', 'note']" in str(exc)
+              and "page 2" in str(exc),
+              f"naming the table, the page and both column sets ({str(exc)[:48]}...)")
+
+    def one_shape(_label, _table, _after):
+        return dict(first_page, more=False)
+
+    same, capped_same = client.walk_export(one_shape, changing)
+    check(same["rows"] == 1 and capped_same == [],
+          "while two pages of one shape are walked as before")
+
+    # And the run words it the way every other refusal is worded, rather than
+    # letting the exception out as a traceback.
+    class ChangedHost(client.Host):
+        key = "a-test-key"
+
+        def listing(self):
+            return changing
+
+        def page(self, label, table, after, limit):
+            return two_shapes(label, table, after)
+
+    saved_argv = sys.argv
+    sys.argv = ["sync_database.py", "--no-upload", "--skip-preflight",
+                "--skip-route-check"]
+    out = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stdout(out):
+            client.main(host=ChangedHost())
+    except SystemExit as exc:
+        code = exc.code
+    except Exception as exc:  # a refusal that became a traceback is still a failure
+        code = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        sys.argv = saved_argv
+    text = out.getvalue()
+    check(code == 1 and "journal.t changed while it was being read" in text
+          and "refusing to merge" in text,
+          f"and the run stops with exit 1, naming the table ({code})")
+
     section("what survives a page")
     values = [value for table in document["tables"]
               for row in table.get("rows") or []
