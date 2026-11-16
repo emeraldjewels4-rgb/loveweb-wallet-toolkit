@@ -29,6 +29,13 @@ Merge
     found in two databases collapses into one entry that records both sources.
     Nothing is deleted, so running this twice is the same as running it once.
 
+Check
+    Before a listing is asked for, ?action=ping says which db_sync.php the host is
+    running: its contract version, the sha256 of the file, and its size. A route
+    that landed half-written answers the next real request with a 500 that names
+    nothing, and the export is where that surfaces, so the run stops here instead
+    and says which half of the comparison disagreed -- stale, or incomplete.
+
 Upload
     The merged rows go back to php/db_sync.php?action=merge, which recomputes
     every key and refuses a row filed under one that does not describe it, then
@@ -149,6 +156,64 @@ def call(url, key, payload=None):
         return json.loads(body)
     except json.JSONDecodeError:
         sys.exit("%s did not answer with JSON: %s" % (url, body[:200]))
+
+
+def probe_route(url, key):
+    """?action=ping, as data: (payload, problem) rather than an exit.
+
+    A stale route answers this with a 400 (no such action) and a broken one with a
+    500 or a PHP fatal, so the failure has to arrive as something this run can word
+    instead of as call()'s generic "refused with HTTP". The key travels in the
+    header and is never part of a message.
+    """
+    request = urllib.request.Request(url, headers={"X-Import-Key": key,
+                                                   "Cache-Control": "no-cache"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()[:200]
+        return None, "the host answered HTTP %s to ?action=ping: %s" % (exc.code, detail)
+    except (urllib.error.URLError, OSError) as exc:
+        return None, "?action=ping could not be reached: %s" % exc
+
+    try:
+        return json.loads(body), None
+    except json.JSONDecodeError:
+        return None, "?action=ping did not answer with JSON: %s" % body[:120]
+
+
+def route_problems(ping, path):
+    """Why the host is not running `path`, as lines; empty when it is.
+
+    The three failures worth naming separately, because they have different fixes:
+    the host does not answer ping at all (its route predates this one), it answers
+    with a different file (the upload did not replace it), or its copy is a
+    different size (the upload was cut short).
+    """
+    if not isinstance(ping, dict) or ping.get("action") != "ping":
+        answered = ping.get("action") if isinstance(ping, dict) else type(ping).__name__
+        return ["?action=ping answered %r, not a ping: the db_sync.php on the host is "
+                "older than this client, or it is not the file that should be there"
+                % (answered,)]
+
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    reported = ping.get("sha256")
+    problems = []
+    if reported != expected:
+        problems.append("the host runs a different db_sync.php: it reports sha256 %s, "
+                        "the file here is %s -- the upload did not replace it, or the "
+                        "copy that landed is not this one"
+                        % (str(reported)[:12] if reported else "nothing", expected[:12]))
+    size = path.stat().st_size
+    if ping.get("bytes") not in (None, size):
+        problems.append("the host's copy is %s bytes and this file is %d: the upload "
+                        "is incomplete" % (ping.get("bytes"), size))
+    if not isinstance(ping.get("version"), int):
+        problems.append("?action=ping reported no version (%r), so it cannot say what "
+                        "it is running" % (ping.get("version"),))
+
+    return problems
 
 
 def walk_export(fetch, listing):
@@ -429,6 +494,25 @@ def main():
             if not (PHP / name).is_file():
                 sys.exit("missing %s" % (PHP / name).relative_to(ROOT))
             upload(name, dry_run=args.dry_run)
+
+    # Before the listing, and before anything is read: the route that is actually
+    # running has to be this file. A db_sync.php that landed half-written answers
+    # the next request with a 500 that names nothing, and the first export is where
+    # that would surface -- after the upload has already replaced the working copy.
+    route_php = PHP / "db_sync.php"
+    ping, problem = probe_route(SYNC_URL + "?action=ping", key)
+    problems = [problem] if problem else route_problems(ping, route_php)
+    if problems:
+        print("  route: the host is not running this %s:" % route_php.name)
+        for line in problems:
+            print("  route: %s" % line)
+        if args.no_upload:
+            print("  route: --no-upload sent nothing, so the host still has what it had; "
+                  "run without it to replace the file")
+        sys.exit(1)
+    print("  route: %s version %s, sha256 %s (%s bytes) matches the upload"
+          % (ping.get("route"), ping.get("version"), str(ping.get("sha256"))[:12],
+             ping.get("bytes")))
 
     cap = max(1, min(20000, args.limit))
 

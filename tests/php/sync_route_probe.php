@@ -126,6 +126,13 @@ $cases = array(
     ),
 
     // Anything else.
+    // The action a client asks first, before it asks for anything else: which file
+    // is answering. It touches no database, which is why it comes before the rest.
+    'ping' => route_case(
+        request(array('method' => 'GET', 'query' => array('action' => 'ping'))),
+        $keyFile
+    ),
+
     'unknown action' => route_case(
         request(array('method' => 'GET', 'query' => array('action' => 'nonsense'))),
         $keyFile

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import hashlib
 import json
 import os
 import shutil
@@ -95,8 +96,21 @@ def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple
             return report["keyless_capped"]
         raise AssertionError("the client asked for something this test does not serve: %s" % url)
 
-    saved = (client.call, client.SNAPSHOT, client.import_key, sys.argv)
-    client.call, client.SNAPSHOT = fake_call, snapshot
+    # The route check is a separate request on purpose (an HTTP failure there is a
+    # message this run words, not call()'s generic one), so the fake host answers it
+    # with what the file on disk would report.
+    route_php = ROOT / "php" / "db_sync.php"
+    ping = {
+        "action": "ping",
+        "route": "db_sync.php",
+        "version": 3,
+        "sha256": hashlib.sha256(route_php.read_bytes()).hexdigest(),
+        "bytes": route_php.stat().st_size,
+    }
+
+    saved = (client.call, client.probe_route, client.SNAPSHOT, client.import_key, sys.argv)
+    client.call, client.probe_route = fake_call, lambda url, key: (ping, None)
+    client.SNAPSHOT = snapshot
     client.import_key = lambda: "a-test-key"
     sys.argv = ["sync_database.py"] + argv
     out = io.StringIO()
@@ -107,7 +121,8 @@ def drive(argv: list[str], report: dict, listing: dict, snapshot: Path) -> tuple
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 0
     finally:
-        client.call, client.SNAPSHOT, client.import_key, sys.argv = saved
+        (client.call, client.probe_route, client.SNAPSHOT, client.import_key,
+         sys.argv) = saved
     return code, out.getvalue()
 
 

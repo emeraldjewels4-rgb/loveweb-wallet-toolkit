@@ -13,12 +13,17 @@ the next page with the cursor the last one returned, that it stops when the host
 says there is nothing more, and that a reply claiming more with no cursor is named
 rather than looped on forever.
 
+It also holds the route check to its three answers: a ping that names the file
+that is here passes, and a stale route, a different file and a short copy are
+three different messages rather than one "it failed".
+
     python test_sync_client.py
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -244,6 +249,45 @@ def main() -> int:
     check(all(table.get("truncated") is False for table in document["tables"]
               if table.get("on")),
           "every table read was read whole, so none is marked truncated")
+
+    section("the route check, before a listing is asked for")
+    # ?action=ping is the host's own account of which db_sync.php is running, so
+    # the comparison is against this checkout's file, not a fixture.
+    route_php = ROOT / "php" / "db_sync.php"
+    ping = {
+        "action": "ping",
+        "route": "db_sync.php",
+        "version": 3,
+        "sha256": hashlib.sha256(route_php.read_bytes()).hexdigest(),
+        "bytes": route_php.stat().st_size,
+    }
+    check(client.route_problems(ping, route_php) == [],
+          "a ping that reports this file's sha256 and size passes")
+
+    stale = client.route_problems({"action": "tables"}, route_php)
+    check(len(stale) == 1 and "older than this client" in stale[0],
+          f"a route with no ping is named as stale, not as a failure ({len(stale)} line)")
+
+    other = client.route_problems(dict(ping, sha256="ab" * 32), route_php)
+    check(len(other) == 1 and "different db_sync.php" in other[0]
+          and "abababababab" in other[0],
+          "a different file is named, with both hashes, so the upload is the suspect")
+
+    short = client.route_problems(dict(ping, bytes=10), route_php)
+    check(len(short) == 1 and "incomplete" in short[0] and "10 bytes" in short[0],
+          f"a short copy is named as incomplete ({short[0].split(':')[0] if short else ''})")
+
+    versionless = client.route_problems(dict(ping, version=None), route_php)
+    check(len(versionless) == 1 and "no version" in versionless[0],
+          "and a ping with no version cannot say what it is running, which is a problem")
+
+    # The whole point of asking first: nothing is read from a host that is not
+    # running this file, so the check has to come before the listing request.
+    main_source = CLIENT.read_text(encoding="utf-8")
+    ping_at = main_source.find("ping, problem = probe_route(SYNC_URL")
+    listing_at = main_source.find('listing = call(SYNC_URL + "?action=tables"')
+    check(0 <= ping_at < listing_at,
+          f"and main() asks for the ping before the listing ({ping_at} < {listing_at})")
 
     section("the one length in a page")
     source = CLIENT.read_text(encoding="utf-8", errors="replace")
