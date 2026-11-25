@@ -6,8 +6,11 @@ about the code rather than about the account. It is configuration now, and
 configuration can be wrong in ways code cannot be: absent, empty, malformed, or
 simply behind the account. Each of those is a case here.
 
-The last section drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed out,
-so the omission report under test is the one that runs, not a description of it.
+The section before last drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed
+out, so the omission report under test is the one that runs, not a description of
+it. The last one covers the credentials preflight: a file in the wrong folder, or
+with a scheme in its host, used to reach cPanel as a refused call instead of a
+message naming the path.
 
 The cross-check is scoped to the group the list names, which is what keeps the
 account's ww9999.* siblings out of the report: they share the w*9999. shape with
@@ -191,6 +194,61 @@ def main() -> int:
     ok, output = run_check(targets + ["web9999.unbound.example"], set(targets))
     check(not ok, "a listed host the account does not have fails too")
     check("not on the account" in output, "and points at --plan as the way to create it")
+
+    print("\n=== 7. the credentials file is checked before a request is built ===")
+    with tempfile.TemporaryDirectory() as folder:
+        where = Path(folder) / "cpanel.json"
+        message = g.missing_credentials(where)
+        check(str(where) in message and "CPANEL_HOST" in message,
+              "an absent file is reported with its absolute path, and with the variables")
+
+        where.write_text("{host: s22.infinitysrv.com", encoding="utf-8")
+        message = refusal(lambda: g.cpanel_settings(where))
+        check(message is not None and "not valid JSON" in message and str(where) in message,
+              "a file that is not JSON is refused, naming the file")
+
+        where.write_text('["s22.infinitysrv.com"]', encoding="utf-8")
+        message = refusal(lambda: g.cpanel_settings(where))
+        check(message is not None and "one JSON object" in message,
+              "an array is refused, because the three keys cannot come from one")
+
+        where.write_text('{"host": "s22.infinitysrv.com", "user": "acct"}',
+                         encoding="utf-8")
+        message = refusal(lambda: g.cpanel_settings(where))
+        check(message is not None and "no token" in message,
+              "a missing token is named rather than sent as an empty credential")
+
+        where.write_text('{"host": "https://s22.infinitysrv.com", "user": "acct",'
+                         ' "token": "t"}', encoding="utf-8")
+        message = refusal(lambda: g.cpanel_settings(where))
+        check(message is not None and "bare hostname" in message
+              and "'s22.infinitysrv.com'" in message,
+              "a scheme is refused, and the message shows the bare host to write")
+
+        where.write_text('{"host": "s22.infinitysrv.com:2083", "user": "acct",'
+                         ' "token": "t"}', encoding="utf-8")
+        message = refusal(lambda: g.cpanel_settings(where))
+        check(message is not None and ":2083" in message and "bare hostname" in message,
+              "a port is refused, because the script adds :2083 itself")
+
+        where.write_text('{"host": " s22.infinitysrv.com ", "user": "acct",'
+                         ' "token": "tok"}', encoding="utf-8")
+        check(g.cpanel_settings(where) == ("s22.infinitysrv.com", "acct", "tok"),
+              "a well-formed file gives the three values back, stripped")
+
+        saved = {name: os.environ.pop(name, None) for name in g.CPANEL_ENV}
+        os.environ.update({"CPANEL_HOST": "s22.infinitysrv.com", "CPANEL_USER": "acct",
+                           "CPANEL_TOKEN": "tok"})
+        try:
+            check(g.cpanel_settings(Path(folder) / "absent.json")
+                  == ("s22.infinitysrv.com", "acct", "tok"),
+                  "with no file, the three CPANEL_* variables are used instead")
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     print("\n" + "=" * 60)
     if FAILED:
