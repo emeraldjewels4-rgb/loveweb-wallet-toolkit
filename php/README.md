@@ -202,8 +202,11 @@ of in a public clone.
 
 Configuration can fall behind the account, so when cPanel credentials are present
 (`.sandbox/cpanel.json`) the run also asks `DomainInfo/list_domains` and names every
-gateway host (`w*9999.`) the account serves that the list does not. That direction
-is a failure, not a note: a host missing from the list is a host that is dark and
+host in the list's own group (`web9999.metakakoon.`) that the account serves and the
+list does not -- not the twenty-eight `ww9999.*` siblings, which share the wider
+`w*9999.` shape without being targets, and which as omissions made the check fail on
+every run. The group is read from the list, so it can never be wider than what the
+list names. That direction is a failure, not a note: a host missing from the list is a host that is dark and
 nobody is checking. The other direction -- a listed host the account does not have
 -- is named too, and `--plan` creates it. Without credentials the DNS and HTTP
 check still runs, and the omission check says it did not run instead of implying
@@ -288,14 +291,14 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - A column named `on` is a reserved word in MariaDB, so the first version's `CREATE TABLE` was rejected while the caught exception served defaults and reported `on = 00`; quoting it fixed the seed, and a failed storage read now says `chain table not ready` in `storage.error` instead of passing for "switched off".
 - The sync ran again after the upgrade and picked up the new table: 3 merged row(s), digest `abdea4c48ad3daec...`, verified end to end.
 
-- **Six** `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: `x0.network`, `x12.mx`, `x13.mx`, `x13.network`, `mind.exchange` and `x12.network`. Read from `config.local.php` rather than a live page, because the toolkit is not deployed at the moment (the FTP root holds a placeholder `index.html`, and `/toolkit/` serves that): the `domains` array carries 2055 entries and the `web9999` gateway (`w*9999.`) matches 34 hosts. An earlier capture recorded five bound, 2051 bindings and 33 gateway hosts; `web9999.metakakoon.x12.network` was bound after it, which is why the install list carries six.
+- **Six** `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: `x0.network`, `x12.mx`, `x13.mx`, `x13.network`, `mind.exchange` and `x12.network`. Read from `config.local.php` rather than a live page, because the toolkit is not deployed at the moment (the FTP root holds a placeholder `index.html`, and `/toolkit/` serves that): the `domains` array carries 2055 entries. The install group is the `web9999.metakakoon.*` set and nothing wider: of the 34 names under the `w*9999.` shape, 28 are `ww9999.*` siblings — the same shape with one more `w` — and those siblings are not install targets. That wider shape is why the cross-check once reported all 28 as omissions; it now matches this six-host group. An earlier capture recorded five bound, 2051 bindings and 33 gateway hosts; `web9999.metakakoon.x12.network` was bound after it, which is why the install list carries six.
 - A binding is not DNS: only `web9999.metakakoon.x12.mx` resolves (`191.223.34.22`; the earlier capture recorded `191.223.34.55`), and it answers `404` over HTTP and fails the TLS handshake on 443, so that server holds no certificate for the name. The other five have no A/AAAA record at all. All six are connected in the matrix; serving the interface at those names still needs their records pointed at this account.
 
 - The six hosts are **bound and on** in the matrix, but the install is not finished: `web9999.metakakoon.x12.mx` resolves to `191.223.34.22` -- a different server from `fiatgod.x10.mx` at `162.253.224.22` -- and answers `404` at `/chain.php` over HTTP, with no TLS handshake on 443; the other five have no A/AAAA record at all.
 - Their zones are not on this server (`dyna-ns.net` for `x12.mx`, Cloudflare for `x13.mx` and `x0.network`, `helloserver.win` for `mind.exchange`, and `x13.network` returns no SOA), so the records belong at those providers, and no credentials for any of them exist here.
 - FTP is chrooted to the toolkit directory -- `cwd ..`, `cwd /` and `cwd ../..` all land back at `/` -- so neither a document root for another host nor a DNS record can be created from this machine. What is left is a cPanel domain per host with root `public_html/toolkit`, plus one record per zone at the provider that owns it.
 
-- `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, the `web9999` gateway at 34 hosts all on, and the install list managing six. It has no DNS record yet, so it is bound and dark like four of the other five.
+- `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, 34 names under the wider `w*9999.` shape all on, and the six `web9999.metakakoon.*` install targets among them — the other 28 are `ww9999.*` siblings, not install targets. It has no DNS record yet, so it is bound and dark like four of the other five.
 
 - The bound database is shown as evidence rather than a count: the tables it can see with `information_schema` row estimates, and the `GRANT` lines `SHOW GRANTS` returns for this user, normalised the same way `?action=report` does it. A binding that connected but can read nothing now says so instead of looking the same as one with tables. `?format=json` carries both lists as `bound.table_list` and `bound.grants`.
 

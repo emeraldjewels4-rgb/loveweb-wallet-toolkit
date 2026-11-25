@@ -9,6 +9,11 @@ simply behind the account. Each of those is a case here.
 The last section drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed out,
 so the omission report under test is the one that runs, not a description of it.
 
+The cross-check is scoped to the group the list names, which is what keeps the
+account's ww9999.* siblings out of the report: they share the w*9999. shape with
+the six web9999.metakakoon.* targets without being targets, and naming them made
+the run fail on twenty-eight hosts it was never meant to install.
+
 No network and no cPanel: gateway_hosts() and omissions() are pure, and check()
 gets fake addresses and a fake account.
 
@@ -137,23 +142,36 @@ def main() -> int:
     check(message is not None and "w*9999" in message,
           "a hostname outside the gateway group is refused, not checked anyway")
 
-    print("\n=== 4. the cross-check names both directions ===")
-    account = {"web9999.a.example", "w1.9999.example", "x12.mx", "ww9999.metamask.x12.mx"}
-    extras, absent = g.omissions(["web9999.a.example"], account)
-    check(extras == ["w1.9999.example", "ww9999.metamask.x12.mx"],
-          "gateway hosts on the account are reported as omitted, sorted")
-    check("x12.mx" not in extras, "a name outside the gateway group is not an omission")
-    extras, absent = g.omissions(["web9999.a.example", "web9999.new.example"], account)
-    check(absent == ["web9999.new.example"], "a target the account lacks comes back in the other list")
-    check(g.omissions(sorted(account), account) == ([], []),
+    print("\n=== 4. the cross-check names both directions, inside the list's group ===")
+    targets = ["web9999.a.example", "web9999.b.example"]
+    account = {"web9999.a.example", "web9999.new.example",
+               "ww9999.metamask.x12.mx", "x12.mx"}
+    extras, absent = g.omissions(targets, account)
+    check(extras == ["web9999.new.example"],
+          "a host in the list's group the account serves is reported as omitted")
+    check("ww9999.metamask.x12.mx" not in extras,
+          "a ww9999.* sibling the account serves is not reported as an omission")
+    check("x12.mx" not in extras, "a name outside the group is not an omission either")
+    extras, absent = g.omissions(targets, {"web9999.a.example"})
+    check(absent == ["web9999.b.example"], "a target the account lacks comes back in the other list")
+    agenda = {"web9999.a.example", "web9999.new.example", "ww9999.metamask.x12.mx"}
+    check(g.omissions(sorted(agenda - {"ww9999.metamask.x12.mx"}), agenda) == ([], []),
           "an account that matches the list produces two empty lists")
 
-    print("\n=== 5. the gateway group is what php/README calls it ===")
-    matches = ["web9999.metakakoon.x0.network", "ww9999.metamask.mind.exchange"]
-    check(all(g.GATEWAY.match(name) for name in matches),
-          "w*9999. matches the bound group and its ww9999 siblings")
-    check(not any(g.GATEWAY.match(name) for name in ("x12.mx", "web8888.example", "toolkit")),
-          "and nothing else on the account")
+    print("\n=== 5. the group comes from the list, not from a wider shape ===")
+    check(g.gateway_group(["web9999.metakakoon.x0.network",
+                           "web9999.metakakoon.x12.mx"]) == "web9999.metakakoon.",
+          "names in one group reduce to that group")
+    check(g.gateway_group(["web9999.a.example"]) == "web9999.a.",
+          "a single name derives its group without taking its zone with it")
+    check(g.GATEWAY.match("ww9999.metamask.mind.exchange"),
+          "the shape still matches a ww9999 sibling -- it validates, it does not compare")
+    message = refusal(lambda: g.gateway_group(["web9999.a.example", "other.example"]))
+    check(message is not None and "more than one group" in message,
+          "names sharing no group are refused, so the pattern cannot fall back to everything")
+    message = with_env("web9999.a.example,w1.9999.b.example", lambda: refusal(g.gateway_hosts))
+    check(message is not None and "more than one group" in message,
+          "and a list spanning two groups is refused before any check runs")
 
     print("\n=== 6. check() fails on an omission and says the comparison did not run ===")
     targets = ["web9999.a.example", "web9999.b.example"]
