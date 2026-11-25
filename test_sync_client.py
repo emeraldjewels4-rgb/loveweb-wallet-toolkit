@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -292,7 +293,7 @@ def main() -> int:
     # digest is self-consistent -- it just counts one row twice, because collect()
     # keys on the values and a new column makes a new key for the same row.
     changing = {"databases": [{"database": "journal", "on": 1, "error": None,
-                              "tables": [{"table": "t", "columns": ["id"],
+                              "tables": [{"table": "t", "columns": ["id", "amount"],
                                           "cursor": "id"}]}]}
     first_page = {"columns": ["id", "amount"], "rows": [{"key": "a"}],
                   "more": True, "next": 1}
@@ -347,6 +348,138 @@ def main() -> int:
     check(code == 1 and "journal.t changed while it was being read" in text
           and "refusing to merge" in text,
           f"and the run stops with exit 1, naming the table ({code})")
+
+    section("a table changed before its first page is asked for")
+    # The listing is phase one; an ALTER between it and page one used to be
+    # adopted as the reference, so every later page agreed with the new shape.
+    early = {"databases": [{"database": "journal", "on": 1, "error": None,
+                            "tables": [{"table": "t", "columns": ["id"],
+                                        "cursor": "id"}]}]}
+
+    def one_page(_label, _table, _after):
+        return {"columns": ["id", "amount"], "rows": [{"key": "a"}], "more": False}
+
+    try:
+        client.walk_export(one_page, early)
+        check(False, "an ALTER between the listing and page one is refused")
+    except client.TableChanged as exc:
+        check("page 1" in str(exc) and "listing reported ['id']" in str(exc)
+              and "['id', 'amount']" in str(exc),
+              f"naming page one, the listing and the page ({str(exc)[:48]}...)")
+
+    section("the same table in two databases")
+    def two_databases(second_columns):
+        return {"databases": [
+            {"database": "journal", "on": 1, "error": None,
+             "tables": [{"table": "t", "columns": ["id", "amount"], "cursor": "id"}]},
+            {"database": "cjd", "on": 1, "error": None,
+             "tables": [{"table": "t", "columns": second_columns, "cursor": "id"}]},
+        ]}
+
+    def shaped_page(label, _table, _after):
+        # Each database serves its own shape, so this is a cross-database
+        # difference rather than a table changing inside one walk.
+        columns = ["id", "amount"] if label == "journal" else ["id", "amount", "note"]
+        return {"columns": columns, "rows": [{"key": label}], "more": False}
+
+    mixed, _capped_mixed = client.walk_export(
+        shaped_page, two_databases(["id", "amount", "note"]))
+    mixed_lines = client.shape_warnings(mixed["shapes"])
+    check(mixed["rows"] == 2
+          and mixed["shapes"] == {"t": {"journal": ["id", "amount"],
+                                        "cjd": ["id", "amount", "note"]}}
+          and len(mixed_lines) == 1
+          and "t has columns" in mixed_lines[0] and "journal" in mixed_lines[0]
+          and "cjd" in mixed_lines[0],
+          f"a table with two column lists across databases is named, not refused "
+          f"({mixed_lines[:1]})")
+
+    def fixed_page(label, _table, _after):
+        return {"columns": ["id", "amount"], "rows": [{"key": label}], "more": False}
+
+    alike, _capped_alike = client.walk_export(fixed_page, two_databases(["id", "amount"]))
+    check(alike["rows"] == 2
+          and alike["shapes"] == {"t": {"journal": ["id", "amount"],
+                                        "cjd": ["id", "amount"]}}
+          and client.shape_warnings(alike["shapes"]) == [],
+          "while the same columns in both databases are walked, recorded and not warned about")
+
+    dropped: list = []
+    warned, _capped_warn = client.walk_export(two_shapes, changing, guard="warn",
+                                              changed=dropped)
+    check(warned["rows"] == 0 and dropped == ["journal.t"],
+          f"--alter-guard=warn drops the table and names it ({dropped})")
+
+    unguarded, _capped_off = client.walk_export(two_shapes, changing, guard="off")
+    check(unguarded["rows"] == 2,
+          "--alter-guard=off merges both shapes rather than comparing them")
+
+    section("a shape that changed between runs")
+    lines = client.shape_drift({"t": {"journal": ["id", "amount"]}},
+                              {"t": {"journal": ["id", "amount", "note"]}})
+    check(lines == ["t in journal: added ['note'] since the last run"],
+          f"the added column is named ({lines})")
+    check(client.shape_drift({"t": {"journal": ["id", "amount"]}},
+                             {"t": {"journal": ["id", "amount"]}}) == [],
+          "and an unchanged table is silent")
+    check(client.shape_drift({"t": {"journal": ["id", "amount"]}},
+                             {"t": {"journal": ["id"]}})
+          == ["t in journal: removed ['amount'] since the last run"],
+          "a removed column is named too")
+    check(client.shape_drift({"t": {"journal": ["id", "amount"]}},
+                             {"t": {"journal": ["amount", "id"]}})
+          == ["t in journal: reordered ['id', 'amount'] -> ['amount', 'id'] "
+              "since the last run"],
+          "a reorder is not silently treated as no change")
+
+    section("the collision warning, driven through main()")
+    # The walk records shapes; main() is what turns them into the advisory. A
+    # listing with one table name in two databases is the end-to-end path: the
+    # warning is printed once and the run finishes, since collect() keys on values
+    # and the two shapes cannot collide.
+    class CollisionHost(client.Host):
+        def listing(self):
+            return {"databases": [
+                {"database": "journal", "on": 1, "error": None,
+                 "tables": [{"table": "t", "columns": ["id", "amount"],
+                             "cursor": "id"}]},
+                {"database": "cjd", "on": 1, "error": None,
+                 "tables": [{"table": "t", "columns": ["id", "amount", "note"],
+                             "cursor": "id"}]},
+            ]}
+
+        def page(self, label, table, after, limit):
+            columns = ["id", "amount"] if label == "journal" \
+                else ["id", "amount", "note"]
+            return {"columns": columns,
+                    "rows": [{"key": label, "values": {"id": label}}],
+                    "more": False}
+
+    (ROOT / ".sandbox").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=str(ROOT / ".sandbox")) as folder:
+        snapshot_path = Path(folder) / "db_merged.json"
+        host = CollisionHost(key="a-test-key", snapshot=snapshot_path)
+        saved_argv = sys.argv
+        sys.argv = ["sync_database.py", "--dry-run", "--no-upload",
+                    "--skip-preflight", "--skip-route-check"]
+        out = io.StringIO()
+        code = 0  # main() returns normally on --dry-run; only a refusal exits
+        try:
+            with contextlib.redirect_stdout(out):
+                client.main(host=host)
+        except SystemExit as exc:
+            code = exc.code
+        finally:
+            sys.argv = saved_argv
+        text = out.getvalue()
+        recorded = json.loads(snapshot_path.read_text())
+    check(code == 0 and text.count("has columns") == 1
+          and "export: warning:" in text
+          and "merge: 2 distinct row(s)" in text
+          and recorded["shapes"] == {"t": {"journal": ["id", "amount"],
+                                          "cjd": ["id", "amount", "note"]}},
+          f"main() warns once, merges both shapes and finishes ({code}, "
+          f"{text.count('has columns')} warning(s))")
 
     section("what survives a page")
     values = [value for table in document["tables"]
