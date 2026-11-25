@@ -189,9 +189,9 @@ def alert(failures, results):
 def self_test():
     """Run every check against samples, so both verdicts are proven."""
     spa = "<!DOCTYPE html><html><head><title>FiatLord - live crypto dashboard</title></head></html>"
-    good_chain = json.dumps({"bound": {"label": "fiatgodx_toolkit", "connected": True,
+    good_chain = json.dumps({"bound": {"label": "probe_toolkit", "connected": True,
                                        "tables": 4, "grants": ["SELECT", "INSERT"]}})
-    bad_chain = json.dumps({"bound": {"label": "fiatgodx_toolkit", "connected": False,
+    bad_chain = json.dumps({"bound": {"label": "probe_toolkit", "connected": False,
                                       "tables": 0}})
     good_preview = json.dumps({"chain_id": 137, "block": 12345})
     good_page = "<!DOCTYPE html><html><body><h1>Polygon Amoy testnet</h1></body></html>"

@@ -15,6 +15,13 @@ The host every other host is measured against is SITE_DOMAIN, the bare domain th
 toolkit is served from (no scheme, no path). Which account that is, is deployment
 data, so it is not in this file: a run without it refuses rather than guessing.
 
+The gateway hosts themselves stay in HOSTS, and that is not an oversight. They are
+what this check reports on: "six hosts, all on" is a statement about that list, so
+a list read from the environment or a file would let a green run describe hosts
+nobody deployed, or hide one that went dark by leaving it out. SITE_DOMAIN is the
+other kind of value -- one name every live-facing script needs in order to build a
+URL, differing per environment -- and only that one moved to configuration.
+
 Credentials: `.sandbox/cpanel.json` ({"host", "user", "token"}) or CPANEL_HOST /
 CPANEL_USER / CPANEL_TOKEN in the environment. Create the token in cPanel ->
 Security -> Manage API Tokens. The file is gitignored like `.sandbox/ftp.json`,
@@ -44,8 +51,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CPANEL_JSON = ROOT / ".sandbox" / "cpanel.json"
 
-# The five hosts, and the document root that serves the toolkit. The directory is
-# relative to the account's home, which is how cPanel's API wants it.
+# The six hosts this script installs and checks, and the document root that serves
+# the toolkit. The directory is relative to the account's home, which is how
+# cPanel's API wants it. The list is literal on purpose -- see the module docstring:
+# widening it is a decision about what gets reported, not a setting.
 HOSTS = (
     "web9999.metakakoon.x0.network",
     "web9999.metakakoon.x12.mx",
