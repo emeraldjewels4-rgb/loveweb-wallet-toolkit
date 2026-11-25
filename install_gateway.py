@@ -17,19 +17,22 @@ toolkit is served from (no scheme, no path). Which account that is, is deploymen
 data, so it is not in this file: a run without it refuses rather than guessing.
 
 Which hosts to install is configuration for the same reason: the list names the
-account. It comes from `.sandbox/gateway_hosts.txt` (one `w*9999.` hostname per
-line, `#` starts a comment) or `GATEWAY_HOSTS` (comma- or space-separated, which
-wins when both are present), and a run with neither refuses instead of checking
-nothing. Every name is validated against the gateway shape on the way in, so a
-typo'd zone or a host outside the group is refused rather than quietly checked.
+account. The group is the `web9999.metakakoon.*` set -- those six names, one per
+zone -- and nothing wider: the account also serves twenty-eight `ww9999.*` names,
+the same `w*9999.` shape with one more `w`, and those siblings are not install
+targets. The list comes from `.sandbox/gateway_hosts.txt` (one hostname per line,
+`#` starts a comment) or `GATEWAY_HOSTS` (comma- or space-separated, which wins
+when both are present), and a run with neither refuses instead of checking nothing.
+Every name is validated against the `w*9999.` shape on the way in, so a typo'd zone
+or a host outside it is refused rather than quietly checked.
 
 A list that lives in configuration can fall behind the account, so with cPanel
 credentials the run also asks DomainInfo/list_domains and names every host in the
 list's own group that the account serves and the list does not. That is the
-direction worth reporting:
-an omitted host is a host that is dark and nobody is checking, so the run fails
-rather than treating it as somebody else's problem. The other direction -- a
-target the account does not have -- is named too, and `--plan` creates it.
+direction worth reporting: an omitted host is a host that is dark and nobody is
+checking, so the run fails rather than treating it as somebody else's problem. The
+other direction -- a target the account does not have -- is named too, and
+`--plan` creates it.
 
 Credentials: `.sandbox/cpanel.json` ({"host", "user", "token"}) or CPANEL_HOST /
 CPANEL_USER / CPANEL_TOKEN in the environment. Create the token in cPanel ->
