@@ -180,10 +180,11 @@ The page reads the chain with `eth_chainId`, `eth_blockNumber` and `eth_gasPrice
 `install_gateway.py` (repository root) is that step, and it separates the three things people usually say in one breath:
 
     python install_gateway.py            # DNS and HTTP per host, no credentials
-    python install_gateway.py --plan     # ask cPanel which of the five exist
+    python install_gateway.py --plan     # ask cPanel which of the targets exist
+    GATEWAY_HOSTS=a.example,b.example python install_gateway.py   # list inline
     python install_gateway.py --apply    # create the missing ones at public_html/toolkit
 
-For each of the five `web9999.metakakoon.*` hosts, all of these have to be true, and none implies the others:
+For each listed host -- the six `web9999.metakakoon.*` names below -- all of these have to be true, and none implies the others:
 
 1. the zone is delegated and has an A/AAAA record pointing at this account;
 2. cPanel has the domain, with document root `public_html/toolkit`;
@@ -191,9 +192,26 @@ For each of the five `web9999.metakakoon.*` hosts, all of these have to be true,
 
 The document root is the part that gets missed: a new domain arrives with an empty root and answers 404 while the interface sits one directory away, and this FTP user is chrooted to the toolkit directory, so that root cannot be created from here. Point it at `public_html/toolkit` and each host serves the interface with no second deploy, because the gateway list is computed from the bindings rather than listed in a file.
 
+The six names are not in the script. Like `SITE_DOMAIN` they are deployment data,
+so the list comes from `.sandbox/gateway_hosts.txt` -- one `w*9999.` hostname per
+line, `#` starts a comment -- or a comma-separated `GATEWAY_HOSTS`, which wins when
+both are present. Each name is validated against that shape, so a typo'd zone or a
+host from outside the group is refused instead of checked. With neither, the run refuses rather than checking nothing, and
+`.sandbox/` is gitignored so the names stay on the machine that serves them instead
+of in a public clone.
+
+Configuration can fall behind the account, so when cPanel credentials are present
+(`.sandbox/cpanel.json`) the run also asks `DomainInfo/list_domains` and names every
+gateway host (`w*9999.`) the account serves that the list does not. That direction
+is a failure, not a note: a host missing from the list is a host that is dark and
+nobody is checking. The other direction -- a listed host the account does not have
+-- is named too, and `--plan` creates it. Without credentials the DNS and HTTP
+check still runs, and the omission check says it did not run instead of implying
+that it passed.
+
 DNS is a separate owner. The zones these hosts belong to are not served by this cPanel server -- `x12.mx` answers from dyna-ns.net, `x13.mx` and `x0.network` from Cloudflare, `mind.exchange` from helloserver.win, and `x13.network` returns no SOA at all -- so the record belongs at that provider. The script reports which host is missing its record instead of pretending a zone edit here would publish it.
 
-The cPanel for this account is the Jupiter theme at `s22.infinitysrv.com:2083`, and its login session is per-browser and expires -- the tab found here answered "Your session cookie is invalid. Please log in again." instead of the Domains page. That leaves two ways to create the five domains: sign in at that host and use Domains -> Create A New Domain with document root `public_html/toolkit`, or create an API token under Security -> Manage API Tokens and write `.sandbox/cpanel.json` with `host`, `user` and `token` so `install_gateway.py --apply` does it. Neither route creates a DNS record, because the zones are not on that server.
+The cPanel for this account is the Jupiter theme at `s22.infinitysrv.com:2083`, and its login session is per-browser and expires -- the tab found here answered "Your session cookie is invalid. Please log in again." instead of the Domains page. That leaves two ways to create the missing domains: sign in at that host and use Domains -> Create A New Domain with document root `public_html/toolkit`, or create an API token under Security -> Manage API Tokens and write `.sandbox/cpanel.json` with `host`, `user` and `token` so `install_gateway.py --apply` does it. Neither route creates a DNS record, because the zones are not on that server.
 
 ## Upload
 
@@ -270,14 +288,14 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 - A column named `on` is a reserved word in MariaDB, so the first version's `CREATE TABLE` was rejected while the caught exception served defaults and reported `on = 00`; quoting it fixed the seed, and a failed storage read now says `chain table not ready` in `storage.error` instead of passing for "switched off".
 - The sync ran again after the upgrade and picked up the new table: 3 merged row(s), digest `abdea4c48ad3daec...`, verified end to end.
 
-- Five `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: the account reports 2051 bindings with `all_on = 01`, and the `web9999` gateway 33 hosts, every one on.
-- A binding is not DNS: only `web9999.metakakoon.x12.mx` resolves (191.223.34.55, answering `404` at `/` and at `/toolkit/chain.php`), and the other four have no record at all. The five are connected in the matrix; serving the interface at those names still needs them provisioned in cPanel with DNS pointed here.
+- **Six** `web9999.metakakoon.*` hosts bound, one line each and labelled `toolkit` like their `ww9999.*` siblings: `x0.network`, `x12.mx`, `x13.mx`, `x13.network`, `mind.exchange` and `x12.network`. Read from `config.local.php` rather than a live page, because the toolkit is not deployed at the moment (the FTP root holds a placeholder `index.html`, and `/toolkit/` serves that): the `domains` array carries 2055 entries and the `web9999` gateway (`w*9999.`) matches 34 hosts. An earlier capture recorded five bound, 2051 bindings and 33 gateway hosts; `web9999.metakakoon.x12.network` was bound after it, which is why the install list carries six.
+- A binding is not DNS: only `web9999.metakakoon.x12.mx` resolves (`191.223.34.22`; the earlier capture recorded `191.223.34.55`), and it answers `404` over HTTP and fails the TLS handshake on 443, so that server holds no certificate for the name. The other five have no A/AAAA record at all. All six are connected in the matrix; serving the interface at those names still needs their records pointed at this account.
 
-- The five hosts are **bound and on** in the matrix, but the install is not finished: `web9999.metakakoon.x12.mx` resolves to `191.223.34.55` -- a different server from `fiatgod.x10.mx` at `162.253.224.22` -- and answers `404` at `/chain.php`; the other four have no A/AAAA record at all.
+- The six hosts are **bound and on** in the matrix, but the install is not finished: `web9999.metakakoon.x12.mx` resolves to `191.223.34.22` -- a different server from `fiatgod.x10.mx` at `162.253.224.22` -- and answers `404` at `/chain.php` over HTTP, with no TLS handshake on 443; the other five have no A/AAAA record at all.
 - Their zones are not on this server (`dyna-ns.net` for `x12.mx`, Cloudflare for `x13.mx` and `x0.network`, `helloserver.win` for `mind.exchange`, and `x13.network` returns no SOA), so the records belong at those providers, and no credentials for any of them exist here.
 - FTP is chrooted to the toolkit directory -- `cwd ..`, `cwd /` and `cwd ../..` all land back at `/` -- so neither a document root for another host nor a DNS record can be created from this machine. What is left is a cPanel domain per host with root `public_html/toolkit`, plus one record per zone at the provider that owns it.
 
-- `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, the `web9999` gateway at 34 hosts all on, and `install_gateway.py` managing six. It has no DNS record yet, so it is bound and dark like four of the other five.
+- `web9999.metakakoon.x12.network` is bound inside the `domains` array, not next to it: 2052 bindings with `all_on = 01`, the `web9999` gateway at 34 hosts all on, and the install list managing six. It has no DNS record yet, so it is bound and dark like four of the other five.
 
 - The bound database is shown as evidence rather than a count: the tables it can see with `information_schema` row estimates, and the `GRANT` lines `SHOW GRANTS` returns for this user, normalised the same way `?action=report` does it. A binding that connected but can read nothing now says so instead of looking the same as one with tables. `?format=json` carries both lists as `bound.table_list` and `bound.grants`.
 

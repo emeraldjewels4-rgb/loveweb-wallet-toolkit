@@ -121,12 +121,12 @@ $sparse->answer('FROM information_schema.COLUMNS', array());
 
 $databases = array(
     'toolkit' => array('toolkit', $primary),
-    'journal' => array('fiatgodx_toolkit', $journal),
+    'journal' => array('probe_toolkit', $journal),
     'cjd' => array('cjd_toolkit', $binary),
     'neighbour' => array('lovewebconnection', $neighbour),
     'offline' => array('offline_db', null),
-    'locked' => array('fiatgodx_orders', $locked),
-    'sparse' => array('fiatgodx_sparse', $sparse),
+    'locked' => array('probe_orders', $locked),
+    'sparse' => array('probe_sparse', $sparse),
 );
 
 $listing = export_tables($databases);
