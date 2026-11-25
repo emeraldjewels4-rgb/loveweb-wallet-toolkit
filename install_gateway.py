@@ -24,8 +24,9 @@ nothing. Every name is validated against the gateway shape on the way in, so a
 typo'd zone or a host outside the group is refused rather than quietly checked.
 
 A list that lives in configuration can fall behind the account, so with cPanel
-credentials the run also asks DomainInfo/list_domains and names every gateway host
-the account serves that the list does not. That is the direction worth reporting:
+credentials the run also asks DomainInfo/list_domains and names every host in the
+list's own group that the account serves and the list does not. That is the
+direction worth reporting:
 an omitted host is a host that is dark and nobody is checking, so the run fails
 rather than treating it as somebody else's problem. The other direction -- a
 target the account does not have -- is named too, and `--plan` creates it.
@@ -69,11 +70,11 @@ PROBE = "/chain.php?format=json"
 # the rest of .sandbox: which hosts this account serves is deployment data.
 HOSTS_TXT = ROOT / ".sandbox" / "gateway_hosts.txt"
 
-# The account's gateway group: every bound host whose name starts with `w` and
-# carries `9999.`, because no domain on the account is literally called `web9999`.
-# Every listed name must match it -- the list is the gateway, not "whatever was
-# typed" -- and the cross-check matches on it too, so a host added at cPanel is
-# named by a run nobody edited the list for.
+# The shape every listed name must have: a `w` label carrying `9999.`. It validates
+# what goes into the list and nothing more. It is deliberately not what the
+# cross-check matches on -- see gateway_group() -- because the account's twenty-eight
+# `ww9999.*` siblings share this shape without being install targets, and matching
+# them reported all twenty-eight as omissions on every run.
 GATEWAY = re.compile(r"^w.*9999\.")
 
 # A bare hostname and nothing else: no scheme, no path, no port, no wildcard.
@@ -127,18 +128,46 @@ def gateway_hosts(path=None):
     if not hosts:
         sys.exit("%s names no hosts, so there would be nothing to check" % source)
 
+    gateway_group(hosts)  # a list spanning two groups has nothing to compare against
+
     return hosts
 
 
+def gateway_group(targets):
+    """The namespace the targets share, e.g. `web9999.metakakoon.`.
+
+    The cross-check matches on this rather than on the `w*9999.` shape, so its
+    pattern can never be wider than the list it compares. On this account the shape
+    also matches twenty-eight `ww9999.*` siblings that are not install targets, and
+    naming those as omissions made every credentialed run fail on hosts nobody
+    meant to install: the check could never pass.
+
+    Read from the list, so a list that moves to another group takes the pattern with
+    it and this file holds no group name. Names sharing no namespace are a refusal --
+    with no common group the pattern would match the whole account, which is the
+    behaviour being removed.
+    """
+    prefix = os.path.commonprefix(list(targets))
+    cut = prefix.rfind(".")
+    if cut < 1:
+        sys.exit("the list spans more than one group: %r share no namespace, so"
+                 " there is nothing to compare the account against" % sorted(targets))
+
+    return prefix[:cut + 1]
+
+
 def omissions(targets, account):
-    """Gateway hosts the account serves that the list does not, and the reverse.
+    """Hosts in the list's group the account serves that it does not, and the reverse.
 
     A configured list can fall behind the account, and a host missing from it is a
     host nothing checks. Naming both directions is what makes the list trustworthy
-    without freezing it back into code.
+    without freezing it back into code. Only the group the list names is compared,
+    so a sibling group such as `ww9999.*` -- same shape, different targets -- is not
+    reported as an omission it was never meant to install.
     """
     wanted = set(targets)
-    gateway = {name for name in account if GATEWAY.match(name)}
+    group = gateway_group(targets)
+    gateway = {name for name in account if name.startswith(group)}
 
     return sorted(gateway - wanted), sorted(wanted - account)
 

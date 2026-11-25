@@ -202,8 +202,11 @@ of in a public clone.
 
 Configuration can fall behind the account, so when cPanel credentials are present
 (`.sandbox/cpanel.json`) the run also asks `DomainInfo/list_domains` and names every
-gateway host (`w*9999.`) the account serves that the list does not. That direction
-is a failure, not a note: a host missing from the list is a host that is dark and
+host in the list's own group (`web9999.metakakoon.`) that the account serves and the
+list does not -- not the twenty-eight `ww9999.*` siblings, which share the wider
+`w*9999.` shape without being targets, and which as omissions made the check fail on
+every run. The group is read from the list, so it can never be wider than what the
+list names. That direction is a failure, not a note: a host missing from the list is a host that is dark and
 nobody is checking. The other direction -- a listed host the account does not have
 -- is named too, and `--plan` creates it. Without credentials the DNS and HTTP
 check still runs, and the omission check says it did not run instead of implying
