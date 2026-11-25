@@ -8,6 +8,11 @@
     python sync_database.py --allow-truncated # merge a keyless table's first page
     python sync_database.py --skip-route-check # use a host whose db_sync.php has no ping
 
+SITE_DOMAIN names the host the toolkit is served from -- the bare domain, no
+scheme and no path. It is deployment data, so it is not in this file: every URL
+below is built from it, and a run without it refuses rather than guessing at a
+host that may be somebody else's.
+
 Download
     php/db_sync.php?action=export reads every table of every database named in
     php/config.local.php -- the primary first, then the SELECT-only neighbours --
@@ -95,9 +100,39 @@ KEY_FILE = PHP / "import.key"
 SNAPSHOT = ROOT / ".sandbox" / "db_merged.json"
 FTP_JSON = ROOT / ".sandbox" / "ftp.json"
 
-BASE = "https://fiatgod.x10.mx/toolkit"
-SYNC_URL = BASE + "/db_sync.php"
-PREVIEW_URL = BASE + "/preview.php?network=amoy"
+
+def site_domain():
+    """The host the toolkit is served from, or a refusal.
+
+    SITE_DOMAIN is the bare domain -- no scheme, no path. The account behind it
+    is deployment data, so the repository holds no copy of it, and a run that has
+    not been told where the site is refuses instead of guessing.
+    """
+    domain = os.environ.get("SITE_DOMAIN", "").strip()
+    if not domain:
+        sys.exit("no SITE_DOMAIN: the host the toolkit is served from is"
+                 " deployment data, so nothing here guesses it. Set SITE_DOMAIN to"
+                 " the bare domain, e.g. example.org -- no scheme, no path.")
+    if "://" in domain or "/" in domain:
+        sys.exit("SITE_DOMAIN must be a bare domain, e.g. example.org: got %r"
+                 % domain)
+
+    return domain
+
+
+def sync_url():
+    """db_sync.php on the host SITE_DOMAIN names.
+
+    Resolved when a request is made rather than when the module is imported, so
+    --help and a run that refuses before it reaches the host need no domain, the
+    same way they need no import.key.
+    """
+    return "https://%s/toolkit/db_sync.php" % site_domain()
+
+
+def preview_url():
+    """preview.php on the host SITE_DOMAIN names, read for the published digest."""
+    return "https://%s/toolkit/preview.php?network=amoy" % site_domain()
 
 # The route contract this client speaks, as ?action=ping reports it. Kept equal to
 # SYNC_ROUTE_VERSION in php/db_sync.php, and asserted against that constant by
@@ -358,9 +393,18 @@ class Host:
     """
 
     def __init__(self, key=None, snapshot=None, base=None):
-        self.base = SYNC_URL if base is None else base
+        self._base = base
         self.snapshot = SNAPSHOT if snapshot is None else snapshot
         self._key = key
+
+    @property
+    def base(self):
+        # Resolved on first use, for the same reason key is: --help, and a refusal
+        # that happens before the host is asked anything, should not need
+        # SITE_DOMAIN to exist either.
+        if self._base is None:
+            self._base = sync_url()
+        return self._base
 
     @property
     def key(self):
@@ -411,7 +455,7 @@ class Host:
 
     def preview(self):
         """The published digest: the same table, read by a different file."""
-        with urllib.request.urlopen(PREVIEW_URL, timeout=120) as response:
+        with urllib.request.urlopen(preview_url(), timeout=120) as response:
             return (json.load(response) or {}).get("merged") or {}
 
     def upload(self, name, dry_run=False):

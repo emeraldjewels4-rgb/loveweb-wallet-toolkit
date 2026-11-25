@@ -88,7 +88,11 @@ class RecordedHost(client.Host):
 
     def __init__(self, ping: dict, report: dict, listing: dict, snapshot: Path,
                  snapshot_in_place: bool = False):
-        super().__init__(key="a-test-key", snapshot=snapshot)
+        # A fake host names its own base: the point of this suite is the walk, and
+        # a request URL built from an unset SITE_DOMAIN would refuse before the
+        # truncation it is here to test.
+        super().__init__(key="a-test-key", snapshot=snapshot,
+                         base="https://toolkit.example/toolkit/db_sync.php")
         self.ping_reply = ping
         self.report_reply = report
         self.listing_reply = listing

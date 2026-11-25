@@ -640,9 +640,54 @@ def main() -> int:
     # for a page -- which used to be assembled inline in main() and was untestable
     # without a whole fake host.
     plain = client.Host(key="a-key")
-    check(plain.base == client.SYNC_URL and plain.key == "a-key"
-          and plain.snapshot == client.SNAPSHOT,
-          f"the default host sends to SYNC_URL, at that snapshot path ({plain.base.split('toolkit')[-1]})")
+    # Constructed before any domain is named: if the base were resolved here,
+    # importing the module would need SITE_DOMAIN and --help would need it too.
+    # The domain below is this check's input, so this is the one check that names
+    # a site -- nothing else in the suite needs one.
+    unset = plain._base is None
+    previous = os.environ.get("SITE_DOMAIN")
+    os.environ["SITE_DOMAIN"] = "toolkit.example"
+    try:
+        default = plain.base
+    finally:
+        if previous is None:
+            del os.environ["SITE_DOMAIN"]
+        else:
+            os.environ["SITE_DOMAIN"] = previous
+    check(unset and default == "https://toolkit.example/toolkit/db_sync.php"
+          and plain.key == "a-key" and plain.snapshot == client.SNAPSHOT,
+          f"the default host builds its URL from SITE_DOMAIN on first use ({default.split('toolkit')[-1]})")
+
+    # The refusal behind that lookup. Every other suite hands the client a valid
+    # domain, so without these two nothing would notice if site_domain() started
+    # guessing a host, or accepted a value it cannot build a URL from.
+    def refusal(domain):
+        previous = os.environ.get("SITE_DOMAIN")
+        if domain is None:
+            os.environ.pop("SITE_DOMAIN", None)
+        else:
+            os.environ["SITE_DOMAIN"] = domain
+        try:
+            client.site_domain()
+        except SystemExit as exc:
+            return str(exc.code)
+        finally:
+            if previous is None:
+                os.environ.pop("SITE_DOMAIN", None)
+            else:
+                os.environ["SITE_DOMAIN"] = previous
+        return None
+
+    missing = refusal(None)
+    check(missing is not None and missing.startswith("no SITE_DOMAIN")
+          and "example.org" in missing,
+          f"a run with no SITE_DOMAIN refuses, and names the bare form ({missing[:44]!r})")
+
+    scheme, path = refusal("https://example.org"), refusal("example.org/toolkit")
+    check(scheme is not None and path is not None
+          and "bare domain" in scheme and "bare domain" in path
+          and "'https://example.org'" in scheme and "'example.org/toolkit'" in path,
+          f"and a scheme or a path is refused, quoting what it got ({scheme!r} / {path!r})")
 
     check(plain.page_url("db one", "a b", 41, 500).endswith(
               "?action=export&table=db%20one.a%20b&limit=500&after=41")
