@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Tests for install_gateway.py's host list and the cPanel cross-check.
+
+The list used to be a literal in the script, which made "all hosts on" a statement
+about the code rather than about the account. It is configuration now, and
+configuration can be wrong in ways code cannot be: absent, empty, malformed, or
+simply behind the account. Each of those is a case here.
+
+The last section drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed out,
+so the omission report under test is the one that runs, not a description of it.
+
+No network and no cPanel: gateway_hosts() and omissions() are pure, and check()
+gets fake addresses and a fake account.
+
+    python test_install_gateway.py
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import install_gateway as g
+
+FAILED: list[str] = []
+
+
+def check(cond: bool, label: str) -> None:
+    if isinstance(cond, str):
+        raise SystemExit(f"check() got a string as its condition: {cond!r}")
+    if not isinstance(label, str):
+        raise SystemExit(f"check() got a non-string label: {label!r}")
+    cond = bool(cond)
+    print(f"  {'PASS' if cond else 'FAIL'}  {label}")
+    if not cond:
+        FAILED.append(label)
+
+
+def with_env(value, call):
+    """Run call() with GATEWAY_HOSTS set to value, or removed when value is None."""
+    saved = os.environ.get("GATEWAY_HOSTS")
+    if value is None:
+        os.environ.pop("GATEWAY_HOSTS", None)
+    else:
+        os.environ["GATEWAY_HOSTS"] = value
+    try:
+        return call()
+    finally:
+        if saved is None:
+            os.environ.pop("GATEWAY_HOSTS", None)
+        else:
+            os.environ["GATEWAY_HOSTS"] = saved
+
+
+def refusal(call):
+    """The message call() refused with, or None when it returned instead."""
+    try:
+        call()
+    except SystemExit as exc:
+        return str(exc)
+    return None
+
+
+def write_list(text, newline=""):
+    """A throwaway file holding text exactly, so CRLF cases survive the write."""
+    handle = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8", newline=newline)
+    handle.write(text)
+    handle.close()
+    return Path(handle.name)
+
+
+def run_check(targets, account):
+    """check() with DNS, HTTP and SITE_DOMAIN stubbed; returns (ok, output)."""
+    saved = (g.addresses, g.probe, g.site_domain)
+    g.addresses = lambda host: {"v4": ["192.0.2.10"], "v6": [], "error": None}
+    g.probe = lambda host: {"scheme": "https", "status": 200, "on": 1, "detail": "toolkit"}
+    g.site_domain = lambda: "example.org"
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            return g.check(targets, account), out.getvalue()
+    finally:
+        g.addresses, g.probe, g.site_domain = saved
+
+
+def main() -> int:
+    print("=== 1. the list comes from a file, one gateway hostname per line ===")
+    listing = write_list("# the gateway group, and its ww9999 siblings\n\nweb9999.a.example\n"
+                         "Web9999.B.example  # second\n"
+                         "web9999.a.example\n")
+    hosts = with_env(None, lambda: g.gateway_hosts(listing))
+    check(hosts == ["web9999.a.example", "web9999.b.example"],
+          "comments, blanks, case and duplicates reduce to the two names, in order")
+    check(hosts[1] == "web9999.b.example", "an inline comment is not part of the name")
+
+    crlf = write_list("web9999.a.example\r\nweb9999.b.example\r\n")
+    hosts = with_env(None, lambda: g.gateway_hosts(crlf))
+    check(hosts == ["web9999.a.example", "web9999.b.example"],
+          "a file written with CRLF parses the same as one with LF")
+
+    empty = write_list("# nothing but a comment\n\n")
+    message = with_env(None, lambda: refusal(lambda: g.gateway_hosts(empty)))
+    check(message is not None and "names no hosts" in message,
+          "an empty list is a refusal, not a run over nothing")
+
+    missing = Path(listing).with_suffix(".absent")
+    message = with_env(None, lambda: refusal(lambda: g.gateway_hosts(missing)))
+    check(message is not None and str(missing) in message and "GATEWAY_HOSTS" in message,
+          "a missing list names the path it looked at and the environment override")
+    check(g.HOSTS_TXT.parts[-2:] == (".sandbox", "gateway_hosts.txt"),
+          "and the default path is the gitignored .sandbox one")
+
+    print("\n=== 2. GATEWAY_HOSTS is the override, and takes commas or spaces ===")
+    hosts = with_env("web9999.from-env.example", lambda: g.gateway_hosts(listing))
+    check(hosts == ["web9999.from-env.example"], "the environment wins over the file")
+    hosts = with_env("web9999.a.example,web9999.b.example", lambda: g.gateway_hosts(listing))
+    check(hosts == ["web9999.a.example", "web9999.b.example"], "a comma-separated list parses")
+    hosts = with_env("web9999.a.example\nweb9999.b.example", lambda: g.gateway_hosts(listing))
+    check(hosts == ["web9999.a.example", "web9999.b.example"], "a newline-separated list parses")
+    hosts = with_env("web9999.a.example, web9999.a.example", lambda: g.gateway_hosts(listing))
+    check(hosts == ["web9999.a.example"], "a repeated name appears once")
+
+    print("\n=== 3. a malformed entry is refused by name, not guessed at ===")
+    message = with_env("https://web9999.a.example", lambda: refusal(g.gateway_hosts))
+    check(message is not None and "not a bare hostname" in message and "https://" in message,
+          "a scheme is refused and the offending line is quoted")
+    message = with_env("web9999.a.example/toolkit", lambda: refusal(g.gateway_hosts))
+    check(message is not None and "web9999.a.example/toolkit" in message, "a path is refused")
+    message = with_env("web9999", lambda: refusal(g.gateway_hosts))
+    check(message is not None and "'web9999'" in message, "a single label is refused")
+    message = with_env("web8888.a.example", lambda: refusal(g.gateway_hosts))
+    check(message is not None and "w*9999" in message,
+          "a hostname outside the gateway group is refused, not checked anyway")
+
+    print("\n=== 4. the cross-check names both directions ===")
+    account = {"web9999.a.example", "w1.9999.example", "x12.mx", "ww9999.metamask.x12.mx"}
+    extras, absent = g.omissions(["web9999.a.example"], account)
+    check(extras == ["w1.9999.example", "ww9999.metamask.x12.mx"],
+          "gateway hosts on the account are reported as omitted, sorted")
+    check("x12.mx" not in extras, "a name outside the gateway group is not an omission")
+    extras, absent = g.omissions(["web9999.a.example", "web9999.new.example"], account)
+    check(absent == ["web9999.new.example"], "a target the account lacks comes back in the other list")
+    check(g.omissions(sorted(account), account) == ([], []),
+          "an account that matches the list produces two empty lists")
+
+    print("\n=== 5. the gateway group is what php/README calls it ===")
+    matches = ["web9999.metakakoon.x0.network", "ww9999.metamask.mind.exchange"]
+    check(all(g.GATEWAY.match(name) for name in matches),
+          "w*9999. matches the bound group and its ww9999 siblings")
+    check(not any(g.GATEWAY.match(name) for name in ("x12.mx", "web8888.example", "toolkit")),
+          "and nothing else on the account")
+
+    print("\n=== 6. check() fails on an omission and says the comparison did not run ===")
+    targets = ["web9999.a.example", "web9999.b.example"]
+    ok, output = run_check(targets, set(targets))
+    check(ok, "a list the account agrees with, all serving, passes")
+    check("agree on every gateway host" in output, "and the agreement is stated, not assumed")
+
+    ok, output = run_check(targets, set(targets) | {"web9999.dark.example"})
+    check(not ok, "a gateway host on the account but not in the list fails the run")
+    check("web9999.dark.example" in output and "not in the list" in output,
+          "and it is named with what to do about it")
+
+    ok, output = run_check(targets, None)
+    check(ok, "no credentials still allows the DNS and HTTP check")
+    check("did not run" in output, "but the omission check is reported as not run, not as passed")
+
+    ok, output = run_check(targets + ["web9999.unbound.example"], set(targets))
+    check(not ok, "a listed host the account does not have fails too")
+    check("not on the account" in output, "and points at --plan as the way to create it")
+
+    print("\n" + "=" * 60)
+    if FAILED:
+        print(f"{len(FAILED)} CHECK(S) FAILED:")
+        for name in FAILED:
+            print("  -", name)
+        return 1
+    print("ALL CHECKS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
