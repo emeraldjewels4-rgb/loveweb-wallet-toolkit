@@ -10,6 +10,11 @@ leaves every existing line byte-for-byte alone.
     python sync_domains.py --from-cpanel     # ask cPanel UAPI directly
     python sync_domains.py --dry-run         # say what it would add, change nothing
 
+SITE_DOMAIN names the host the toolkit is served from -- the bare domain, no
+scheme and no path. It is deployment data, so it is not in this file; only the
+final check needs it, and a run that reaches that check without it refuses
+rather than guessing.
+
 Sources
     file    .sandbox/domains.txt or .sandbox/domains.b64 -- the account's domain
             list as captured from the cPanel Domains page.
@@ -44,7 +49,30 @@ LIST_TXT = ROOT / ".sandbox" / "domains.txt"
 LIST_B64 = ROOT / ".sandbox" / "domains.b64"
 FTP_JSON = ROOT / ".sandbox" / "ftp.json"
 LOCAL_PHP = ROOT / ".sandbox" / "php" / "php.exe"
-VERIFY_URL = "https://fiatgod.x10.mx/toolkit/preview.php?network=amoy"
+
+
+def site_domain():
+    """The host the toolkit is served from, or a refusal.
+
+    SITE_DOMAIN is the bare domain -- no scheme, no path. The account behind it
+    is deployment data, so the repository holds no copy of it, and a run that has
+    not been told where the site is refuses instead of guessing.
+    """
+    domain = os.environ.get("SITE_DOMAIN", "").strip()
+    if not domain:
+        sys.exit("no SITE_DOMAIN: the host the toolkit is served from is"
+                 " deployment data, so nothing here guesses it. Set SITE_DOMAIN to"
+                 " the bare domain, e.g. example.org -- no scheme, no path.")
+    if "://" in domain or "/" in domain:
+        sys.exit("SITE_DOMAIN must be a bare domain, e.g. example.org: got %r"
+                 % domain)
+
+    return domain
+
+
+def verify_url():
+    """preview.php on the host SITE_DOMAIN names."""
+    return "https://%s/toolkit/preview.php?network=amoy" % site_domain()
 
 # One entry of the `domains` array: eight spaces, a quoted key, a quoted label.
 ENTRY = re.compile(r"^\s*'([^']+)'\s*=>\s*'([^']+)',\s*$", re.MULTILINE)
@@ -180,11 +208,13 @@ def upload(path, dry_run=False):
         sys.exit("upload truncated: %d of %d bytes landed" % (size, path.stat().st_size))
 
 
-def verify(expected, dry_run=False, url=VERIFY_URL):
+def verify(expected, dry_run=False, url=None):
     """The live site must report the count we just wrote, with everything on."""
     if dry_run:
         print("  verify: would expect %d domains live" % expected)
         return True
+
+    url = verify_url() if url is None else url
 
     request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
     with urllib.request.urlopen(request, timeout=90) as response:

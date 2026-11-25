@@ -7,9 +7,16 @@ name: deploy php
 # can reach. Only a push to main (or a manual dispatch) deploys.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   FTP_SERVER    ftp.fiatgod.x10.mx
+#   FTP_SERVER    the FTP host of the account's server
 #   FTP_USERNAME  an FTP account scoped to public_html/toolkit
 #   FTP_PASSWORD  that account's password
+#
+# Required repository variable, same place, Variables tab:
+#   SITE_DOMAIN   the bare domain the toolkit is served from, e.g. example.org,
+#                 with no scheme and no /toolkit. A hostname is public and the
+#                 account behind it is deployment data, so this is a variable
+#                 rather than a secret -- and the verify step builds every URL
+#                 it fetches from it.
 #
 # The uploaded directory is php/, which contains no key and no signer: the
 # signing tools stay on a machine you control.
@@ -57,11 +64,17 @@ jobs:
       # on it before anyone traced it to Settings -> Secrets. Name them here, and
       # say what they must be: the FTP account is chrooted to public_html/toolkit,
       # so these are that account's credentials, not the cPanel login.
-      - name: Refuse to deploy without the FTP secrets
+      #
+      # SITE_DOMAIN is checked here for the same reason, one step earlier than it
+      # would fail on its own: unset, the verify step would fetch
+      # https:///toolkit and report a malformed URL rather than naming the value
+      # it is missing. Nothing is uploaded before this passes.
+      - name: Refuse to deploy without the FTP secrets and SITE_DOMAIN
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
         run: |
           set -euo pipefail
           missing=""
@@ -76,6 +89,23 @@ jobs:
             exit 1
           fi
           echo "ftp secrets present: server, username, password"
+
+          if [ -z "$SITE_DOMAIN" ]; then
+            echo "::error::deploy php is missing repository variable SITE_DOMAIN"
+            echo "Add it under Settings -> Secrets and variables -> Actions -> Variables:"
+            echo "the bare domain the toolkit is served from, e.g. example.org,"
+            echo "with no scheme and no /toolkit. The URL checks are built from it."
+            echo "Nothing was uploaded; the site is unchanged."
+            exit 1
+          fi
+          case "$SITE_DOMAIN" in
+            *://*|*/*)
+              echo "::error::SITE_DOMAIN must be a bare domain, got: $SITE_DOMAIN"
+              echo "Drop the scheme and any path: example.org, not https://example.org/toolkit."
+              exit 1
+              ;;
+          esac
+          echo "site domain present: $SITE_DOMAIN"
 
       - name: Publish php/ over FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
@@ -106,9 +136,11 @@ jobs:
       # A successful upload is not a working site. This is the check that would
       # have caught /toolkit/ serving the SPA's catch-all instead of index.php.
       - name: Verify the live endpoints
+        env:
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
         run: |
           set -euo pipefail
-          base="https://fiatgod.x10.mx/toolkit"
+          base="https://${SITE_DOMAIN}/toolkit"
           wait_for() {
             local url="$1" want="$2" tries=0
             until body="$(curl -fsS -m 20 "$url")"; do

@@ -8,6 +8,11 @@
     python sync_database.py --allow-truncated # merge a keyless table's first page
     python sync_database.py --skip-route-check # use a host whose db_sync.php has no ping
 
+SITE_DOMAIN names the host the toolkit is served from -- the bare domain, no
+scheme and no path. It is deployment data, so it is not in this file: every URL
+below is built from it, and a run without it refuses rather than guessing at a
+host that may be somebody else's.
+
 Download
     php/db_sync.php?action=export reads every table of every database named in
     php/config.local.php -- the primary first, then the SELECT-only neighbours --
@@ -95,9 +100,39 @@ KEY_FILE = PHP / "import.key"
 SNAPSHOT = ROOT / ".sandbox" / "db_merged.json"
 FTP_JSON = ROOT / ".sandbox" / "ftp.json"
 
-BASE = "https://fiatgod.x10.mx/toolkit"
-SYNC_URL = BASE + "/db_sync.php"
-PREVIEW_URL = BASE + "/preview.php?network=amoy"
+
+def site_domain():
+    """The host the toolkit is served from, or a refusal.
+
+    SITE_DOMAIN is the bare domain -- no scheme, no path. The account behind it
+    is deployment data, so the repository holds no copy of it, and a run that has
+    not been told where the site is refuses instead of guessing.
+    """
+    domain = os.environ.get("SITE_DOMAIN", "").strip()
+    if not domain:
+        sys.exit("no SITE_DOMAIN: the host the toolkit is served from is"
+                 " deployment data, so nothing here guesses it. Set SITE_DOMAIN to"
+                 " the bare domain, e.g. example.org -- no scheme, no path.")
+    if "://" in domain or "/" in domain:
+        sys.exit("SITE_DOMAIN must be a bare domain, e.g. example.org: got %r"
+                 % domain)
+
+    return domain
+
+
+def sync_url():
+    """db_sync.php on the host SITE_DOMAIN names.
+
+    Resolved when a request is made rather than when the module is imported, so
+    --help and a run that refuses before it reaches the host need no domain, the
+    same way they need no import.key.
+    """
+    return "https://%s/toolkit/db_sync.php" % site_domain()
+
+
+def preview_url():
+    """preview.php on the host SITE_DOMAIN names, read for the published digest."""
+    return "https://%s/toolkit/preview.php?network=amoy" % site_domain()
 
 # The route contract this client speaks, as ?action=ping reports it. Kept equal to
 # SYNC_ROUTE_VERSION in php/db_sync.php, and asserted against that constant by
@@ -358,9 +393,18 @@ class Host:
     """
 
     def __init__(self, key=None, snapshot=None, base=None):
-        self.base = SYNC_URL if base is None else base
+        self._base = base
         self.snapshot = SNAPSHOT if snapshot is None else snapshot
         self._key = key
+
+    @property
+    def base(self):
+        # Resolved on first use, for the same reason key is: --help, and a refusal
+        # that happens before the host is asked anything, should not need
+        # SITE_DOMAIN to exist either.
+        if self._base is None:
+            self._base = sync_url()
+        return self._base
 
     @property
     def key(self):
@@ -411,7 +455,7 @@ class Host:
 
     def preview(self):
         """The published digest: the same table, read by a different file."""
-        with urllib.request.urlopen(PREVIEW_URL, timeout=120) as response:
+        with urllib.request.urlopen(preview_url(), timeout=120) as response:
             return (json.load(response) or {}).get("merged") or {}
 
     def upload(self, name, dry_run=False):
@@ -438,7 +482,7 @@ class TableChanged(Exception):
     """
 
 
-def walk_export(fetch, listing):
+def walk_export(fetch, listing, guard="refuse", changed=None):
     """Every page of every table, assembled into the document collect() merges.
 
     `listing` is ?action=tables: what there is, and which column a page of it is
@@ -460,11 +504,25 @@ def walk_export(fetch, listing):
     nothing is missing and the digest is self-consistent -- so it raises
     TableChanged instead of being handed on.
 
+    `guard` says what to do when a table is read in two shapes: "refuse" (the
+    default) raises TableChanged, "warn" drops that table from the document and
+    names it in `changed`, and "off" walks without comparing at all. `changed` is
+    an optional list the caller supplies to collect those names.
+
+    A same-named table in two databases is not compared here: collect() keys a row
+    on its values, so copies with different columns cannot collide, and two
+    databases may legitimately hold different tables under one name. The walk just
+    records each database's shape in document["shapes"], and shape_warnings() and
+    shape_drift() draw the advisory lines from that one structure. The hard
+    refusal is only for one table read in two shapes inside one walk.
+
     Returns (document, capped) where capped names those tables as
-    (database.table, rows read).
+    (database.table, rows read), and document["shapes"] is {table: columns} for
+    the tables that were read whole, for comparing against the last run.
     """
-    document = {"tables": [], "rows": 0}
+    document = {"tables": [], "rows": 0, "shapes": {}}
     capped = []
+    changed = [] if changed is None else changed
 
     for database in listing.get("databases") or []:
         label = database.get("database")
@@ -482,27 +540,37 @@ def walk_export(fetch, listing):
         for entry in database.get("tables") or []:
             table = entry.get("table")
             cursor = entry.get("cursor")
+            listing_columns = entry.get("columns")
             rows = []
             after = None
             more = False
-            columns = None
             page_number = 0
+            # The first page is compared with the listing too: an ALTER between
+            # ?action=tables and page one would otherwise be adopted silently as the
+            # reference, and every later page would agree with it.
+            reference = listing_columns if isinstance(listing_columns, list) else None
+            dropped = False
             while True:
                 page = fetch(label, table, after)
                 page_number += 1
                 seen = page.get("columns")
                 # A page that reports no columns cannot disagree with one that
                 # does; only a comparison of two lists is evidence of a change.
-                if isinstance(seen, list):
-                    if columns is None:
-                        columns = seen
-                    elif seen != columns:
-                        raise TableChanged(
+                if guard != "off" and isinstance(seen, list):
+                    if reference is None:
+                        reference = seen
+                    elif seen != reference:
+                        message = (
                             "%s.%s changed while it was being read: page %d of it "
-                            "reports columns %s, the first page reported %s. A row "
+                            "reports columns %s, the listing reported %s. A row "
                             "on both sides of that ALTER is merged twice, on two "
                             "keys, and the digest then counts both"
-                            % (label, table, page_number, seen, columns))
+                            % (label, table, page_number, seen, reference))
+                        if guard == "refuse":
+                            raise TableChanged(message)
+                        changed.append("%s.%s" % (label, table))
+                        dropped = True
+                        break
                 rows.extend(page.get("rows") or [])
                 more = bool(page.get("more"))
                 after = page.get("next")
@@ -513,6 +581,15 @@ def walk_export(fetch, listing):
                     # nothing to ask for next. Named rather than looping forever.
                     raise ValueError("%s.%s says there is more but gave no cursor to "
                                      "continue from" % (label, table))
+
+            if dropped:
+                # The table's rows on both sides of the change are what would be
+                # merged twice, so the whole table goes rather than a half of it.
+                continue
+            if guard != "off" and reference is not None:
+                # One entry per database, so a same-named table in two databases
+                # keeps both shapes rather than one overwriting the other.
+                document["shapes"].setdefault(table, {})[label] = reference
 
             if more:
                 capped.append(("%s.%s" % (label, table), len(rows)))
@@ -588,6 +665,76 @@ def previous_keys():
         return set()
 
     return {row.get("key") for row in data.get("merged") or [] if row.get("key")}
+
+
+def previous_shapes(path=None):
+    """The per-database shapes the last snapshot recorded, or {} when none."""
+    source = SNAPSHOT if path is None else path
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    shapes = data.get("shapes")
+
+    return shapes if isinstance(shapes, dict) else {}
+
+
+def shape_warnings(shapes):
+    """A same-named table with different columns in two databases, as lines.
+
+    collect() keys a row on its values, so these copies cannot collide and are not
+    refused; the difference is reported because it usually means one copy was
+    altered, which is worth seeing before the two are read as the same table.
+    """
+    lines = []
+    for table in sorted(shapes):
+        copies = shapes[table]
+        if not isinstance(copies, dict) or len(copies) < 2:
+            continue
+        first_label, first_columns = sorted(copies.items())[0]
+        for label, columns in sorted(copies.items())[1:]:
+            if columns != first_columns:
+                lines.append(
+                    "%s has columns %s in %s and %s in %s: they are two different "
+                    "shapes, so collect() keeps their rows apart on value keys "
+                    "rather than merging them. If they were meant to be one table, "
+                    "one copy has been altered"
+                    % (table, first_columns, first_label, columns, label))
+
+    return lines
+
+
+def shape_drift(previous, current):
+    """Columns that differ from the last run, per table and database.
+
+    The mid-walk guard cannot see a schema that changed between runs, because each
+    run's pages agree with that run's listing. This compares the shapes recorded in
+    the previous snapshot with this run's, so a table altered while nobody was
+    looking is reported instead of only changing the digest.
+    """
+    lines = []
+    for table in sorted(set(previous) | set(current)):
+        was_copies = previous.get(table)
+        now_copies = current.get(table)
+        if not isinstance(was_copies, dict) or not isinstance(now_copies, dict):
+            continue
+        for database in sorted(set(was_copies) & set(now_copies)):
+            was, now = was_copies[database], now_copies[database]
+            if not isinstance(was, list) or not isinstance(now, list) or was == now:
+                continue
+            added = [column for column in now if column not in was]
+            removed = [column for column in was if column not in now]
+            parts = []
+            if added:
+                parts.append("added %s" % added)
+            if removed:
+                parts.append("removed %s" % removed)
+            if not parts:
+                parts.append("reordered %s -> %s" % (was, now))
+            lines.append("%s in %s: %s since the last run"
+                         % (table, database, ", ".join(parts)))
+
+    return lines
 
 
 def verification(scoped, accumulated, local_keys, expected, prev_keys):
@@ -721,6 +868,12 @@ def main(host=None):
                         help="do not ask the host whether ALTER is granted before merging")
     parser.add_argument("--skip-route-check", action="store_true",
                         help="use whatever db_sync.php is on the host, even one with no ping")
+    parser.add_argument("--alter-guard", choices=("refuse", "warn", "off"),
+                        default="refuse",
+                        help="what a table changing within one walk does: refuse"
+                             " (default), warn and drop that table, or off (merge both"
+                             " shapes). A same-named table in two databases is always"
+                             " named as a warning, never refused")
     args = parser.parse_args()
 
     # Everything below goes through this one object, so a test can replace the
@@ -756,7 +909,8 @@ def main(host=None):
     if args.skip_route_check:
         print("  route: check skipped (--skip-route-check): the host's %s is not compared "
               "with this one, so a stale or half-written copy would show up as a failed "
-              "request instead of here" % route_php.name)
+              "request instead of here; the ALTER guard still runs (--alter-guard=%s)"
+              % (route_php.name, args.alter_guard))
     else:
         ping, problem = host.ping()
         problems = [problem] if problem else route_problems(ping, route_php)
@@ -783,13 +937,23 @@ def main(host=None):
     def fetch(label, table, after):
         return host.page(label, table, after, cap)
 
+    if args.alter_guard == "off":
+        print("  export: the ALTER guard is off (--alter-guard=off): a table read in "
+              "two shapes is merged twice, and the digest will agree with itself")
+    changed = []
     try:
-        export, capped = walk_export(fetch, listing)
+        export, capped = walk_export(fetch, listing, guard=args.alter_guard,
+                                     changed=changed)
     except TableChanged as exc:
         print("  export: %s" % exc)
         print("  export: refusing to merge; nothing was written and the snapshot "
               "is untouched")
         sys.exit(1)
+    for name in changed:
+        print("  export: %s changed while it was being read; dropped from this run "
+              "(--alter-guard=warn)" % name)
+    for line in shape_warnings(export.get("shapes") or {}):
+        print("  export: warning: %s" % line)
 
     # Before anything is merged, and before the snapshot is overwritten with a
     # prefix: a table that could not be walked means the export is not the whole
@@ -813,6 +977,8 @@ def main(host=None):
 
     print("  merge: %d distinct row(s), %d duplicate(s) collapsed"
           % (len(merged), seen_rows - len(merged)))
+    for line in shape_drift(previous_shapes(), export.get("shapes") or {}):
+        print("  drift: %s" % line)
 
     expected = digest(merged)
     # Read before the snapshot is overwritten: it is the only local record of
@@ -826,6 +992,7 @@ def main(host=None):
         "databases": sorted({row["source_db"] for row in merged.values()}),
         "rows": len(merged),
         "digest": expected,
+        "shapes": export.get("shapes") or {},
         "merged": sorted(merged.values(), key=lambda entry: entry["key"]),
     })
     print("  snapshot: %s (%d bytes)"

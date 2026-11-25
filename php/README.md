@@ -73,6 +73,26 @@ The explicit list does not grow by itself, so `sync_domains.py` (repository root
 
 `--from-cpanel` needs `CPANEL_HOST`, `CPANEL_USER` and `CPANEL_TOKEN` (cPanel → Security → Manage API Tokens) and no browser, which makes it the mode to put on a schedule. Without a token, the file source uses the list captured from the cPanel Domains page. Existing lines are never rewritten, so a second run adds nothing; upload credentials (`FTP_HOST`/`FTP_USER`/`FTP_PASSWORD`, or `.sandbox/ftp.json`) are never printed, and a live count that does not match makes the command exit non-zero instead of reporting success.
 
+### SITE_DOMAIN, which the live-facing scripts read
+
+Four scripts in the repository root build every URL from `SITE_DOMAIN` -- the bare
+domain the toolkit is served from, no scheme and no path -- and refuse to run
+without it: `sync_domains.py`, `sync_database.py`, `install_gateway.py` and
+`check_live.py`.
+
+    SITE_DOMAIN=example.org python sync_database.py
+    SITE_DOMAIN=example.org python check_live.py
+
+The account behind the domain is deployment data, so the repository holds no copy
+of it; a run that has not been told where the site is says so instead of guessing
+at a host that may be somebody else's. `check_live.py --self-test` is the one mode
+that needs no domain, because each check is handed a response rather than a URL.
+The two workflows read the same value from the repository variable `SITE_DOMAIN`
+(Settings -> Secrets and variables -> Actions -> Variables): `deploy-php.yml`
+needs it to build the URLs its verify step fetches, `toolkit-watch.yml` for the
+hourly check.
+
+
 ### The stored text file
 
 `cjd.php` in this directory is not PHP: it is a 65 KB text file of bracketed hostnames, served as-is. `cjd_store.php` reads it and writes it into `cjd_source` in the primary database — one row holding the whole file, its byte count and its sha256. That is a write endpoint, so it refuses to do anything unless `import.key` (gitignored) sits next to it and the request presents that value, and the file name must match a plain-filename allowlist and resolve inside this directory. The reply reports the row read back out of the database, so "it landed" means the bytes are in MySQL rather than that PHP answered 200. `preview.php` publishes the same row's size and hash — never the body — as `cjd`, which is what makes the claim checkable from outside.

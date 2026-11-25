@@ -8,8 +8,12 @@
 Why the document root matters: a new domain gets an empty document root, and an
 empty document root answers 404 while the interface sits one directory away. Every
 host here is pointed at `public_html/toolkit` -- the directory that already serves
-`https://fiatgod.x10.mx/toolkit/` -- so the interface answers at
-`https://<host>/chain.php` with no second deploy.
+the toolkit -- so the interface answers at `https://<host>/chain.php` with no
+second deploy.
+
+The host every other host is measured against is SITE_DOMAIN, the bare domain the
+toolkit is served from (no scheme, no path). Which account that is, is deployment
+data, so it is not in this file: a run without it refuses rather than guessing.
 
 Credentials: `.sandbox/cpanel.json` ({"host", "user", "token"}) or CPANEL_HOST /
 CPANEL_USER / CPANEL_TOKEN in the environment. Create the token in cPanel ->
@@ -29,6 +33,7 @@ host that is still dark.
 
 import argparse
 import json
+import os
 import socket
 import sys
 import urllib.error
@@ -52,7 +57,24 @@ HOSTS = (
 DOCUMENT_ROOT = "public_html/toolkit"
 PROBE = "/chain.php?format=json"
 
-REFERENCE = "fiatgod.x10.mx"
+
+def site_domain():
+    """The host every other host is measured by, or a refusal.
+
+    SITE_DOMAIN is the bare domain -- no scheme, no path. The account behind it
+    is deployment data, so the repository holds no copy of it, and a run that has
+    not been told where the site is refuses instead of guessing.
+    """
+    domain = os.environ.get("SITE_DOMAIN", "").strip()
+    if not domain:
+        sys.exit("no SITE_DOMAIN: the domain the toolkit is served from is"
+                 " deployment data, so nothing here guesses it. Set SITE_DOMAIN to"
+                 " the bare domain, e.g. example.org -- no scheme, no path.")
+    if "://" in domain or "/" in domain:
+        sys.exit("SITE_DOMAIN must be a bare domain, e.g. example.org: got %r"
+                 % domain)
+
+    return domain
 
 
 def cpanel_settings():
@@ -60,8 +82,6 @@ def cpanel_settings():
         data = json.loads(CPANEL_JSON.read_text())
 
         return data.get("host"), data.get("user"), data.get("token")
-
-    import os
 
     return (os.environ.get("CPANEL_HOST"), os.environ.get("CPANEL_USER"),
             os.environ.get("CPANEL_TOKEN"))
@@ -147,11 +167,13 @@ def probe(host):
 
 
 def check():
-    reference = set(addresses(REFERENCE)["v4"])
+    reference_host = site_domain()
+    reference = set(addresses(reference_host)["v4"])
     if reference:
-        print("  reference: %s resolves to %s" % (REFERENCE, ", ".join(sorted(reference))))
+        print("  reference: %s resolves to %s"
+              % (reference_host, ", ".join(sorted(reference))))
     else:
-        print("  reference: %s did not resolve from here" % REFERENCE)
+        print("  reference: %s did not resolve from here" % reference_host)
 
     problems = 0
     for host in HOSTS:
@@ -162,7 +184,7 @@ def check():
         print("\n  %s" % host)
         print("    dns    : A %s | AAAA %d record(s)%s" % (
             ", ".join(found["v4"]) or "none (%s)" % found["error"],
-            len(found["v6"]), " (same server as %s)" % REFERENCE if same else ""))
+            len(found["v6"]), " (same server as %s)" % reference_host if same else ""))
         print("    chain  : %s" % (
             "%s:// %s-> on=%02d" % (answer["scheme"], answer["status"], answer["on"])
             if answer["on"] is not None
@@ -172,7 +194,8 @@ def check():
             print("    needs  : an A/AAAA record at the zone's provider, then the domain in cPanel")
             problems += 1
         elif not same:
-            print("    needs  : the record points somewhere else; it must reach %s" % REFERENCE)
+            print("    needs  : the record points somewhere else; it must reach %s"
+                  % reference_host)
             problems += 1
         elif answer["on"] != 1:
             print("    needs  : the domain added in cPanel with document root %s" % DOCUMENT_ROOT)

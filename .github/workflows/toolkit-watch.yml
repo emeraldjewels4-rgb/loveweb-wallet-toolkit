@@ -35,5 +35,8 @@ jobs:
 
       - name: Check the deployed toolkit
         env:
+          # The domain is deployment data, so check_live.py refuses to guess it.
+          # Same repository variable the deploy workflow reads.
+          SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python check_live.py

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Warn when the deployed toolkit stops answering, not only when it 404s.
 
-    python check_live.py              # check the pages the site serves
+    SITE_DOMAIN=example.org python check_live.py  # check the pages the site serves
     python check_live.py --self-test  # prove the checks catch what they claim
+
+SITE_DOMAIN names the host the toolkit is served from -- the bare domain, no
+scheme and no path. It is deployment data, so it is not in this file: every URL
+below is built from it, and a run without it refuses rather than guessing at a
+host that may be somebody else's. `--self-test` needs no domain, because every
+check is handed a response rather than a URL.
 
 Why status codes are not enough
     The domain's parent .htaccess rewrites every unknown path to the FiatLord SPA.
@@ -40,14 +46,36 @@ import time
 import urllib.error
 import urllib.request
 
-BASE = "https://fiatgod.x10.mx/toolkit"
-
 # Present in every page the parent site serves; never in this toolkit's own pages.
 SPA_MARKERS = ("FiatLord",)
 
 TIMEOUT = 45
 ATTEMPTS = 2
 RETRY_GAP = 8
+
+
+def site_domain():
+    """The host the toolkit is served from, or a refusal.
+
+    SITE_DOMAIN is the bare domain -- no scheme, no path. The account behind it
+    is deployment data, so the repository holds no copy of it, and a run that has
+    not been told where the site is refuses instead of guessing.
+    """
+    domain = os.environ.get("SITE_DOMAIN", "").strip()
+    if not domain:
+        sys.exit("no SITE_DOMAIN: the host the toolkit is served from is"
+                 " deployment data, so nothing here guesses it. Set SITE_DOMAIN to"
+                 " the bare domain, e.g. example.org -- no scheme, no path.")
+    if "://" in domain or "/" in domain:
+        sys.exit("SITE_DOMAIN must be a bare domain, e.g. example.org: got %r"
+                 % domain)
+
+    return domain
+
+
+def toolkit_base():
+    """The toolkit's own directory, as an absolute URL."""
+    return "https://%s/toolkit" % site_domain()
 
 
 def fetch(url):
@@ -132,10 +160,12 @@ def status_page(status, content_type, body):
     return True, "%d bytes, network section present" % len(body)
 
 
+# Paths, not URLs: the host is joined on at run time, so --self-test can call these
+# checks without a SITE_DOMAIN being configured.
 CHECKS = (
-    ("index.php", BASE + "/index.php", status_page),
-    ("chain.php", BASE + "/chain.php?format=json", check_json_page("chain.php", chain_facts)),
-    ("preview.php", BASE + "/preview.php?network=amoy", check_json_page("preview.php", preview_facts)),
+    ("index.php", "/index.php", status_page),
+    ("chain.php", "/chain.php?format=json", check_json_page("chain.php", chain_facts)),
+    ("preview.php", "/preview.php?network=amoy", check_json_page("preview.php", preview_facts)),
 )
 
 
@@ -202,8 +232,10 @@ def main():
     if args.self_test:
         sys.exit(self_test())
 
+    base = toolkit_base()
     results = []
-    for name, url, check in CHECKS:
+    for name, path, check in CHECKS:
+        url = base + path
         status, content_type, body = fetch(url)
         ok, detail = check(status, content_type, body)
         results.append((name, url, ok, detail))

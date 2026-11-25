@@ -11,7 +11,7 @@ declare(strict_types=1);
  * that was not written by us. A stub cannot be wrong about MariaDB; it can only
  * agree with our assumption about it.
  *
- * So this creates four tables with the shapes that matter and asks the route:
+ * So this creates six tables with the shapes that matter and asks the route:
  *
  *   walked           single-column PRIMARY KEY         -> cursor `id`
  *   by_id            no PRIMARY KEY, an `id` column    -> cursor `id`, by fallback
@@ -30,7 +30,13 @@ declare(strict_types=1);
  * `unique_not_null` by its unique column, and reads a keyless table once to see
  * `paged: false` come from the server's own answer rather than a fixture's.
  *
- * Destructive only inside the database it is given: the four tables are dropped
+ * It also performs the ALTER the client's guard exists for: `alter_test` is
+ * listed with two columns, one page is read, the table gains a column, and the
+ * next page is read. The two pages carry different column lists, which is what
+ * walk_export() refuses -- so the premise the guard rests on is read from a real
+ * catalogue instead of asserted from a recorded page.
+ *
+ * Destructive only inside the database it is given: the six tables are dropped
  * and recreated there. It is meant for a scratch database (the CI service creates
  * `toolkit_probe`), never for a configured host database.
  *
@@ -112,7 +118,8 @@ check(true, sprintf('connected to %s as %s on %s', $server, $user, $name));
 
 echo "  section: the tables this server actually has\n";
 
-foreach (array('walked', 'by_id', 'unique_not_null', 'unique_nullable', 'keyless') as $table) {
+foreach (array('walked', 'by_id', 'unique_not_null', 'unique_nullable', 'keyless',
+               'alter_test') as $table) {
     mysqli_query($link, 'DROP TABLE IF EXISTS `' . $table . '`');
 }
 
@@ -171,6 +178,17 @@ mysqli_query(
 );
 mysqli_query($link, "INSERT INTO `keyless` (`slug`, `note`) VALUES ('one', 'a'), ('two', 'b')");
 
+// The table the ALTER guard is about: created and listed with two columns, read
+// one page deep, given a third column, then read again from the same cursor.
+mysqli_query($link, '
+    CREATE TABLE `alter_test` (
+        `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        `amount` DECIMAL(10,2) NOT NULL,
+        PRIMARY KEY (`id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+');
+mysqli_query($link, "INSERT INTO `alter_test` (`amount`) VALUES (100.00), (200.00), (300.00)");
+
 $databases = array('toolkit' => array($name, $link));
 
 try {
@@ -190,9 +208,10 @@ foreach ($database['tables'] as $entry) {
     $orders[$entry['table']] = $entry;
 }
 
-check(count($orders) === 5,
-      sprintf('it found the five tables it created (%d)', count($orders)));
-foreach (array('walked', 'by_id', 'unique_not_null', 'unique_nullable', 'keyless') as $table) {
+check(count($orders) === 6,
+      sprintf('it found the six tables it created (%d)', count($orders)));
+foreach (array('walked', 'by_id', 'unique_not_null', 'unique_nullable', 'keyless',
+               'alter_test') as $table) {
     check(isset($orders[$table]), sprintf('%s is in the listing', $table));
 }
 
@@ -267,6 +286,33 @@ $nullable = export_page('toolkit', 'unique_nullable', null, 1, $databases);
 check($nullable['paged'] === false and $nullable['cursor'] === null,
       'a nullable UNIQUE column leaves the table unwalkable, which is the server saying so');
 
+echo "  section: an ALTER between two pages, as the walk guard sees it\n";
+
+$alterListing = $orders['alter_test'] ?? null;
+check($alterListing !== null and $alterListing['columns'] === array('id', 'amount'),
+      sprintf('the listing records the table before the ALTER (%s)',
+              $alterListing === null ? 'missing' : implode(',', $alterListing['columns'])));
+
+$alterFirst = export_page('toolkit', 'alter_test', null, 2, $databases);
+check($alterFirst['columns'] === array('id', 'amount')
+      and page_keys($alterFirst) === array('1', '2'),
+      'page one is the pre-ALTER shape, two rows deep');
+
+mysqli_query($link, 'ALTER TABLE `alter_test` ADD COLUMN `note` VARCHAR(16) NOT NULL DEFAULT \'\' AFTER `amount`');
+
+$alterSecond = export_page('toolkit', 'alter_test', (string) $alterFirst['next'], 2, $databases);
+check($alterSecond['columns'] === array('id', 'amount', 'note'),
+      sprintf('page two after the ALTER carries the new column (%s)',
+              implode(',', $alterSecond['columns'])));
+check($alterFirst['columns'] !== $alterSecond['columns'],
+      'so the two pages of one table disagree, which is what walk_export() refuses');
+check(page_keys($alterSecond) === array('3'),
+      'and it still resumes where page one stopped, so both pages are real rows');
+
+$alterAfter = listing_entry(export_tables($databases), 'alter_test');
+check($alterAfter !== null and $alterAfter['columns'] === array('id', 'amount', 'note'),
+      'a fresh listing sees the new shape, so the listing-vs-page-one guard has both sides');
+
 echo "  section: a table that is not there\n";
 
 $refused = null;
@@ -295,6 +341,8 @@ echo json_encode(array(
     'pages' => array('first' => $first, 'second' => $second, 'past' => $past),
     'keyless' => $keyless,
     'unique' => array('first' => $uniqueFirst, 'second' => $uniqueSecond, 'nullable' => $nullable),
+    'alter' => array('listing' => $orders['alter_test'], 'first' => $alterFirst,
+                     'second' => $alterSecond, 'after_listing' => $alterAfter),
     'checks' => $checks,
 ), JSON_UNESCAPED_SLASHES), "\n";
 
