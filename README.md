@@ -808,6 +808,16 @@ distinct passphrase per file, so the address sets never overlap. An existing
 file is never touched, so on a machine that has the real exports the real
 exports are what get tested.
 
+The suites need no environment of their own. The scripts that talk to the live
+site do: `sync_database.py`, `sync_domains.py`, `install_gateway.py` and
+`check_live.py` build every URL from `SITE_DOMAIN` -- the bare domain the toolkit
+is served from, no scheme and no path -- and refuse to run without it.
+
+```bash
+SITE_DOMAIN=example.org python sync_database.py
+```
+
+
 **One command, one exit code.** [run_tests.py](run_tests.py) runs the thirty-one
 suites and `audit_test_checks.py`, prints one summary table, and exits nonzero
 if any of them does -- a missing suite file and a timeout count as failures,
