@@ -56,8 +56,8 @@ The right-hand side is a **label** from `others` (or `toolkit` for the primary),
 A binding is not a hosting decision, and the difference matters here. Three separate states are worth recording, because all three look like bugs and none of them is one:
 
 - **`ww9999.metakakoon.x12.com` is not on this account.** The cPanel domain search returns no results for it and it is NXDOMAIN publicly, so the entry below binds a database to a host that has not been created yet. It is written down so the binding is already right on the day the domain is added (Create A New Domain) and its DNS points at this server — it does not make the host exist, and nothing is served there today.
-- **The other `metakakoon` names do exist in cPanel** with document roots, but their public DNS answers NXDOMAIN, so they cannot be reached from outside either.
-- **All of them except `ww9999.metakakoon.x13.network` redirect to `https://fiatgod.x10.mx/`**, so they serve the same site as the toolkit (and that one host keeps its own document root).
+- **Every other `metakakoon` name is bound in cPanel** with a document root, but none of them has a public record of its own. As of 2026-11-26 all of them answer NXDOMAIN except the `*.metakakoon.x12.mx` names, and that zone is a wildcard: any label under it, including an invented one, resolves to `191.223.34.22` and answers `404` with no `Location` header and no TLS on 443. So they cannot be reached from outside today either, and a name that is NXDOMAIN cannot redirect anywhere.
+- **An earlier observation, recorded 2026-11-04, had all of them except `ww9999.metakakoon.x13.network` redirecting to `https://fiatgod.x10.mx/`**, with that one host keeping its own document root. That is the state of those hosts on that date, not something the names do now: a redirect needs a record to answer on, and the group no longer has one, so the check here reproduces the NXDOMAIN and not the redirect.
 
 The map binds them anyway: a checked config beats four applications each pasting their own credentials, and a wrong binding is visible on the page instead of buried in a deploy script.
 
