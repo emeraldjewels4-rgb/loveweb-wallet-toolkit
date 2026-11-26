@@ -6,12 +6,17 @@ about the code rather than about the account. It is configuration now, and
 configuration can be wrong in ways code cannot be: absent, empty, malformed, or
 simply behind the account. Each of those is a case here.
 
-The section before last drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed
-out, so the omission report under test is the one that runs, not a description of
-it. The last two cover the credentials: the preflight in install_gateway, where a file
-in the wrong folder or with a scheme in its host used to reach cPanel as a refused
-call instead of a message naming the path, and the same reader reached through
-sync_domains.names_from_cpanel(), where a refused call used to be a traceback.
+The sixth section drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed out,
+so the omission report under test is the one that runs, not a description of it. The
+one after it does the same for plan(), with cpanel_call() stubbed: --plan is asserted
+to send nothing, --apply to send one addsubdomain per missing host with the arguments
+the call actually receives, and the summary to be the re-read rather than the hope.
+The last three cover the credentials and the account: the preflight in install_gateway,
+where a file in the wrong folder or with a scheme in its host used to reach cPanel as a
+refused call instead of a message naming the path; the same reader reached through
+sync_domains.names_from_cpanel(), where a refused call used to be a traceback; and the
+name of the account being asked, so a token from another account does not read as a
+list full of omissions.
 
 The cross-check is scoped to the group the list names, which is what keeps the
 account's ww9999.* siblings out of the report: they share the w*9999. shape with
@@ -137,6 +142,30 @@ def refuse_cpanel(status, body, seen=None):
     return fake
 
 
+def run_plan(targets, existing, after=None, replies=None, apply_changes=False):
+    """plan() with cpanel_call() and the post-apply list stubbed; (result, out, calls).
+
+    The requests are the thing under test, so they are recorded rather than sent:
+    what --plan did not send matters as much as what --apply did.
+    """
+    calls = []
+    queue = list(replies or [])
+    saved = (g.cpanel_call, g.listed_domains)
+
+    def fake_call(path, **params):
+        calls.append((path, params))
+        return queue.pop(0) if queue else {"status": 1}
+
+    g.cpanel_call = fake_call
+    g.listed_domains = lambda: set(existing if after is None else after)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            return g.plan(targets, set(existing), apply_changes), out.getvalue(), calls
+    finally:
+        g.cpanel_call, g.listed_domains = saved
+
+
 def main() -> int:
     print("=== 1. the list comes from a file, one gateway hostname per line ===")
     listing = write_list("# the gateway group, and its ww9999 siblings\n\nweb9999.a.example\n"
@@ -236,7 +265,49 @@ def main() -> int:
     check(not ok, "a listed host the account does not have fails too")
     check("not on the account" in output, "and points at --plan as the way to create it")
 
-    print("\n=== 7. the credentials file is checked before a request is built ===")
+    print("\n=== 7. plan() asks once per missing host, and sends nothing under --plan ===")
+    targets = ["web9999.a.example", "web9999.metakakoon.x12.mx"]
+    existing = {"web9999.a.example"}
+
+    result, output, calls = run_plan(targets, existing)
+    check(calls == [], "a plan-only run sends no request, so it cannot create anything")
+    check("web9999.metakakoon.x12.mx" in output and "re-run with --apply" in output,
+          "the missing host is named, with the flag that would create it")
+    check(result == existing, "and the result is the account it read, not the list it wants")
+
+    result, output, calls = run_plan(targets, existing, after=set(targets),
+                                     replies=[{"status": 1}], apply_changes=True)
+    check(len(calls) == 1, "an apply run asks once for the one missing host")
+    check(calls[0][0] == "SubDomain/addsubdomain", "and the ask is the addsubdomain call")
+    check(calls[0][1] == {"domain": "web9999.metakakoon", "rootdomain": "x12.mx",
+                          "dir": g.DOCUMENT_ROOT},
+          "split at the zone, with the toolkit as the document root")
+    check("after apply: 2 of 2 present" in output, "the summary re-reads the account afterwards")
+    check(result == set(targets), "and the result is what cPanel says it now has")
+
+    zone = ["web9999.metakakoon.mind.exchange"]
+    result, output, calls = run_plan(zone, set(), after=set(zone),
+                                     replies=[{"status": 1}], apply_changes=True)
+    check(calls[0][1]["rootdomain"] == "mind.exchange"
+          and calls[0][1]["domain"] == "web9999.metakakoon",
+          "a two-label zone is taken whole as the root, not split in half")
+
+    targets = ["web9999.a.example", "web9999.b.example"]
+    existing = {"web9999.a.example"}
+    result, output, calls = run_plan(
+        targets, existing, after=existing,
+        replies=[{"status": 0, "errors": ["The domain already exists."]}],
+        apply_changes=True)
+    check("refused" in output and "The domain already exists." in output,
+          "a status that is not 1 is printed as refused, with cPanel's own text")
+    check("after apply: 1 of 2 present, missing web9999.b.example" in output,
+          "and a host still absent after the call is named in the summary")
+
+    result, output, calls = run_plan(targets, set(targets), apply_changes=True)
+    check(calls == [] and "nothing to create" in output,
+          "an account that has every host sends no request, even under --apply")
+
+    print("\n=== 8. the credentials file is checked before a request is built ===")
     with tempfile.TemporaryDirectory() as folder:
         where = Path(folder) / "cpanel.json"
         message = g.missing_credentials(where)
@@ -291,7 +362,7 @@ def main() -> int:
                 else:
                     os.environ[name] = value
 
-    print("\n=== 8. sync_domains reads the same file, and refuses the same way ===")
+    print("\n=== 9. sync_domains reads the same file, and refuses the same way ===")
     rows = {"data": [
         {"domain": "a.example", "servername": "a.example", "rootdomain": "example"},
         {"domain": "b.example"},
@@ -361,7 +432,7 @@ def main() -> int:
                 if value is not None:
                     os.environ[name] = value
 
-    print("\n=== 9. the account being asked is named, and the token is not ===")
+    print("\n=== 10. the account being asked is named, and the token is not ===")
     targets = ["web9999.a.example", "web9999.b.example"]
     ok, output = run_check(targets, set(targets) | {"web9999.dark.example"})
     check("account: asking cPanel as acct on s22.infinitysrv.com" in output,
