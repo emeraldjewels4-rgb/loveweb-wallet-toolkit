@@ -228,6 +228,10 @@ def cpanel_settings(path=None):
     so a file saved in the wrong folder looked like cPanel refusing: the run had
     already got as far as asking. Every refusal here happens before a socket is
     opened, and each one names the absolute path the script reads.
+
+    Nothing configured is not a refusal here: (None, None, None) is how the
+    plain check learns to skip the cross-check. require_settings() is this same
+    read for a caller that cannot do without the account.
     """
     path = Path(path) if path is not None else CPANEL_JSON
     where = str(path)
@@ -265,11 +269,23 @@ def cpanel_settings(path=None):
     return host, user, token
 
 
-def cpanel_call(path, **params):
-    """One UAPI call. Errors carry cPanel's own message and never the token."""
+def require_settings():
+    """host, user and token for a run that needs the account, or the refusal.
+
+    The one place a missing account becomes a message. Every request goes through
+    cpanel_call(), so a run that needs cPanel is told once, with the absolute path
+    -- not read twice by main() and again by the first call.
+    """
     host, user, token = cpanel_settings()
     if not (host and user and token):
         sys.exit(missing_credentials())
+
+    return host, user, token
+
+
+def cpanel_call(path, **params):
+    """One UAPI call. Errors carry cPanel's own message and never the token."""
+    host, user, token = require_settings()
 
     query = urllib.parse.urlencode({"api.version": "1", **params})
     url = "https://%s:2083/execute/%s?%s" % (host, path, query)
@@ -455,10 +471,9 @@ def main():
 
     targets = gateway_hosts()
     if args.plan or args.apply:
-        # Before the first request: a missing or malformed credentials file is
-        # reported here, with its absolute path, rather than as a refused call.
-        if not any(cpanel_settings()):
-            sys.exit(missing_credentials())
+        # The first request reads the credentials file and refuses there, naming
+        # its absolute path, so a missing or malformed file is that one message
+        # rather than a refused call -- and the file is read once, not twice.
         account = plan(targets, listed_domains(), apply_changes=args.apply)
         print("\nChecking what the hosts actually answer\n")
     else:
