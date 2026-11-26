@@ -71,7 +71,7 @@ The explicit list does not grow by itself, so `sync_domains.py` (repository root
     python sync_domains.py --from-cpanel     # ask cPanel UAPI directly
     python sync_domains.py --dry-run         # report, write nothing
 
-`--from-cpanel` needs `CPANEL_HOST`, `CPANEL_USER` and `CPANEL_TOKEN` (cPanel → Security → Manage API Tokens) and no browser, which makes it the mode to put on a schedule. Without a token, the file source uses the list captured from the cPanel Domains page. Existing lines are never rewritten, so a second run adds nothing; upload credentials (`FTP_HOST`/`FTP_USER`/`FTP_PASSWORD`, or `.sandbox/ftp.json`) are never printed, and a live count that does not match makes the command exit non-zero instead of reporting success.
+`--from-cpanel` reads its token from `.sandbox/cpanel.json` -- the same `host`, `user` and `token` object `install_gateway.py` reads -- or from `CPANEL_HOST`, `CPANEL_USER` and `CPANEL_TOKEN` (cPanel → Security → Manage API Tokens), and needs no browser, which makes it the mode to put on a schedule; the request goes through `install_gateway.py`'s client, so a malformed file, a host written with a scheme or a refused call is the same named message here as there. Without a token, the file source uses the list captured from the cPanel Domains page. Existing lines are never rewritten, so a second run adds nothing; upload credentials (`FTP_HOST`/`FTP_USER`/`FTP_PASSWORD`, or `.sandbox/ftp.json`) are never printed, and a live count that does not match makes the command exit non-zero instead of reporting success.
 
 ### SITE_DOMAIN, which the live-facing scripts read
 

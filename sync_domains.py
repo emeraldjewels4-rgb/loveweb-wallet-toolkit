@@ -18,10 +18,12 @@ rather than guessing.
 Sources
     file    .sandbox/domains.txt or .sandbox/domains.b64 -- the account's domain
             list as captured from the cPanel Domains page.
-    cpanel  /execute/DomainInfo/list_domains over HTTPS with an API token
-            (CPANEL_HOST, CPANEL_USER, CPANEL_TOKEN). Create one under
-            cPanel > Security > Manage API Tokens. Fully automatic: no browser,
-            so this is the mode to put on a schedule.
+    cpanel  /execute/DomainInfo/list_domains over HTTPS with an API token, read
+            from .sandbox/cpanel.json or CPANEL_HOST / CPANEL_USER / CPANEL_TOKEN
+            through install_gateway.py's client, so a malformed file or a host
+            written with a scheme is the same named refusal here. Create a token
+            under cPanel > Security > Manage API Tokens. Fully automatic: no
+            browser, so this is the mode to put on a schedule.
 
 Upload
     FTP_HOST / FTP_USER / FTP_PASSWORD, or .sandbox/ftp.json with the same keys.
@@ -35,6 +37,7 @@ domain count afterwards, so a scheduled run that silently failed is not silent.
 import argparse
 import base64
 import gzip
+import install_gateway
 import json
 import os
 import re
@@ -118,24 +121,21 @@ def names_from_file():
         raw = gzip.decompress(base64.b64decode(LIST_B64.read_text())).decode("utf-8")
         return raw.splitlines(), str(LIST_B64.relative_to(ROOT))
     sys.exit("no .sandbox/domains.txt or .sandbox/domains.b64 -- capture the domain list first,"
-             " or run with --from-cpanel and CPANEL_* set")
+             " or run with --from-cpanel to ask cPanel with .sandbox/cpanel.json or CPANEL_*")
 
 
 def names_from_cpanel():
-    host = os.environ.get("CPANEL_HOST", "").strip()
-    user = os.environ.get("CPANEL_USER", "").strip()
-    token = os.environ.get("CPANEL_TOKEN", "").strip()
-    if not (host and user and token):
-        sys.exit("--from-cpanel needs CPANEL_HOST, CPANEL_USER and CPANEL_TOKEN"
-                 " (cPanel > Security > Manage API Tokens)")
+    """The account's domain names, asked for through install_gateway's client.
 
-    url = "https://%s:2083/execute/DomainInfo/list_domains?api.version=1" % host
-    request = urllib.request.Request(url, headers={
-        "Authorization": "cpanel %s:%s" % (user, token),
-        "Accept": "application/json",
-    })
-    with urllib.request.urlopen(request, timeout=45) as response:
-        payload = json.load(response)
+    One client, so .sandbox/cpanel.json works here too, a malformed file or a host
+    written with a scheme is the same named refusal, and a refused request is a
+    message instead of a traceback. Only each row's `domain` is taken: this file
+    binds hosts, and a row's `servername` or `rootdomain` is a parent zone that was
+    never the binding meant.
+    """
+    payload = install_gateway.cpanel_call(
+        "DomainInfo/list_domains",
+        next_step="Run without --from-cpanel to use the saved domain list instead.")
 
     rows = payload.get("data")
     if not isinstance(rows, list):
