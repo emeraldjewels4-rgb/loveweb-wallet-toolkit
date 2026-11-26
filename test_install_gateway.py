@@ -8,9 +8,10 @@ simply behind the account. Each of those is a case here.
 
 The section before last drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed
 out, so the omission report under test is the one that runs, not a description of
-it. The last one covers the credentials preflight: a file in the wrong folder, or
-with a scheme in its host, used to reach cPanel as a refused call instead of a
-message naming the path.
+it. The last two cover the credentials: the preflight in install_gateway, where a file
+in the wrong folder or with a scheme in its host used to reach cPanel as a refused
+call instead of a message naming the path, and the same reader reached through
+sync_domains.names_from_cpanel(), where a refused call used to be a traceback.
 
 The cross-check is scoped to the group the list names, which is what keeps the
 account's ww9999.* siblings out of the report: they share the w*9999. shape with
@@ -27,12 +28,15 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
+import urllib.error
 from pathlib import Path
 
 import install_gateway as g
+import sync_domains as s
 
 FAILED: list[str] = []
 
@@ -94,6 +98,42 @@ def run_check(targets, account):
             return g.check(targets, account), out.getvalue()
     finally:
         g.addresses, g.probe, g.site_domain = saved
+
+
+def serve_cpanel(payload, seen=None):
+    """A urlopen stand-in answering with payload and recording each request."""
+    class Reply:
+        status = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def read(self, size=None):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake(request, timeout=None):
+        if seen is not None:
+            seen.append(request)
+        return Reply(json.dumps(payload).encode("utf-8"))
+
+    return fake
+
+
+def refuse_cpanel(status, body, seen=None):
+    """A urlopen stand-in that raises the HTTPError a refused call produces."""
+    def fake(request, timeout=None):
+        if seen is not None:
+            seen.append(request)
+        raise urllib.error.HTTPError(request.full_url, status, "refused", {},
+                                     io.BytesIO(body.encode("utf-8")))
+
+    return fake
 
 
 def main() -> int:
@@ -248,6 +288,76 @@ def main() -> int:
                 if value is None:
                     os.environ.pop(name, None)
                 else:
+                    os.environ[name] = value
+
+    print("\n=== 8. sync_domains reads the same file, and refuses the same way ===")
+    rows = {"data": [
+        {"domain": "a.example", "servername": "a.example", "rootdomain": "example"},
+        {"domain": "b.example"},
+        {"rootdomain": "example"},
+        "junk",
+    ]}
+    seen = []
+    with tempfile.TemporaryDirectory() as folder:
+        where = Path(folder) / "cpanel.json"
+        where.write_text('{"host": "s22.infinitysrv.com", "user": "acct", "token": "tok"}',
+                         encoding="utf-8")
+        missing = Path(folder) / "absent.json"
+        bad = Path(folder) / "bad.json"
+        bad.write_text("{host: s22", encoding="utf-8")
+        scheme = Path(folder) / "scheme.json"
+        scheme.write_text('{"host": "https://s22.infinitysrv.com", "user": "a",'
+                          ' "token": "t"}', encoding="utf-8")
+
+        saved_env = {name: os.environ.pop(name, None) for name in g.CPANEL_ENV}
+        saved = (g.CPANEL_JSON, g.urllib.request.urlopen)
+        try:
+            g.CPANEL_JSON = where
+            g.urllib.request.urlopen = serve_cpanel(rows, seen)
+            names, source = s.names_from_cpanel()
+            check(seen[0].full_url == "https://s22.infinitysrv.com:2083/execute/"
+                  "DomainInfo/list_domains?api.version=1",
+                  "the file is read, and the request is the shared client's")
+            check(seen[0].headers.get("Authorization") == "cpanel acct:tok",
+                  "with the token in the header and never in the URL")
+            check("next_step" not in seen[0].full_url,
+                  "and the refusal's next step is not sent as a query parameter")
+            check(names == ["a.example", "b.example"],
+                  "only each row's domain is taken, so a parent zone is not a binding")
+            check(source == "cPanel UAPI",
+                  "and the source label still says where the list came from")
+
+            g.CPANEL_JSON = missing
+            message = refusal(lambda: s.names_from_cpanel())
+            check(message is not None and str(missing) in message,
+                  "no credentials names the absolute file it looked for")
+            check(message is not None and message.endswith(
+                      "Run without --from-cpanel to use the saved domain list instead.")
+                  and "--plan" not in message,
+                  "and ends with this script's next step, not a flag it does not have")
+
+            g.CPANEL_JSON = bad
+            message = refusal(lambda: s.names_from_cpanel())
+            check(message is not None and "not valid JSON" in message and str(bad) in message,
+                  "a malformed file is the same refusal here as in install_gateway")
+
+            g.CPANEL_JSON = scheme
+            message = refusal(lambda: s.names_from_cpanel())
+            check(message is not None and "bare hostname" in message
+                  and "'s22.infinitysrv.com'" in message,
+                  "and so is a host written with a scheme")
+
+            g.CPANEL_JSON = where
+            g.urllib.request.urlopen = refuse_cpanel(
+                403, '{"errors":["The API token is invalid."]}')
+            message = refusal(lambda: s.names_from_cpanel())
+            check(message is not None and "refused with HTTP 403" in message
+                  and "The API token is invalid." in message,
+                  "a refused call exits with cPanel's status and text, not a traceback")
+        finally:
+            g.CPANEL_JSON, g.urllib.request.urlopen = saved
+            for name, value in saved_env.items():
+                if value is not None:
                     os.environ[name] = value
 
     print("\n" + "=" * 60)
