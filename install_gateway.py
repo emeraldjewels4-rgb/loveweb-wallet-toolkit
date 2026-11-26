@@ -37,7 +37,10 @@ other direction -- a target the account does not have -- is named too, and
 Credentials: `.sandbox/cpanel.json` ({"host", "user", "token"}) or CPANEL_HOST /
 CPANEL_USER / CPANEL_TOKEN in the environment. Create the token in cPanel ->
 Security -> Manage API Tokens. The file is gitignored like `.sandbox/ftp.json`,
-and the token is never printed, logged or echoed, even when a call fails.
+and the token is never printed, logged or echoed, even when a call fails. A run
+that asks cPanel names the account it asked -- the cPanel user and the bare host --
+in `--plan` and before the cross-check, so a token belonging to another account
+reads as the wrong credential rather than as a list full of omissions.
 
 What this deliberately does not do: create DNS records. The zones these hosts
 belong to are not served by this cPanel server -- `x12.mx`, `x13.mx`, `x0.network`
@@ -187,6 +190,21 @@ def account_domains():
         return None
 
     return listed_domains()
+
+
+def account_identity():
+    """`<user> on <host>` for the account a run will ask, or None without one.
+
+    Printed wherever the run compares itself with the account, because a token for
+    a different account answers with a different domain list: the cross-check then
+    reports every gateway host as missing, which looks like a dark install rather
+    than the wrong credential. Never the token -- same rule as the requests.
+    """
+    host, user, _ = cpanel_settings()
+    if not (host and user):
+        return None
+
+    return "%s on %s" % (user, host)
 
 
 def site_domain():
@@ -411,6 +429,9 @@ def check(targets, account):
         print("\n  account: no cPanel credentials, so the list was not compared with"
               " what cPanel serves -- the omission check did not run")
     else:
+        asking = account_identity()
+        if asking:
+            print("\n  account: asking cPanel as %s" % asking)
         extras, absent = omissions(targets, account)
         for host in extras:
             print("\n  %s\n    list   : on the account as a gateway host, not in the list"
@@ -429,6 +450,9 @@ def check(targets, account):
 
 
 def plan(targets, existing, apply_changes):
+    asking = account_identity()
+    if asking:
+        print("  account: asking cPanel as %s" % asking)
     missing = [host for host in targets if host not in existing]
     extras, _ = omissions(targets, existing)
     print("  cPanel lists %d name(s); %d of %d target(s) present, %d missing"
