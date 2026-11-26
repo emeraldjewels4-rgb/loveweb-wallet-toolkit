@@ -208,23 +208,84 @@ def site_domain():
     return domain
 
 
-def cpanel_settings():
-    if CPANEL_JSON.is_file():
-        data = json.loads(CPANEL_JSON.read_text())
+CPANEL_ENV = ("CPANEL_HOST", "CPANEL_USER", "CPANEL_TOKEN")
+CPANEL_HELP = '{"host": "s22.infinitysrv.com", "user": "ACCOUNT", "token": "..."}'
 
-        return data.get("host"), data.get("user"), data.get("token")
 
-    return (os.environ.get("CPANEL_HOST"), os.environ.get("CPANEL_USER"),
-            os.environ.get("CPANEL_TOKEN"))
+def missing_credentials(path=None):
+    """The one message for nothing usable being configured, naming both places."""
+    path = Path(path) if path is not None else CPANEL_JSON
+
+    return ("no cPanel credentials: write %s as one JSON object with \"host\","
+            " \"user\" and \"token\", or set CPANEL_HOST/CPANEL_USER/CPANEL_TOKEN."
+            " Run without --plan/--apply for the DNS and HTTP check only." % path)
+
+
+def cpanel_settings(path=None):
+    """host, user and token, checked before any request is built.
+
+    Where the file is and how it is shaped used to surface only as a failed call,
+    so a file saved in the wrong folder looked like cPanel refusing: the run had
+    already got as far as asking. Every refusal here happens before a socket is
+    opened, and each one names the absolute path the script reads.
+
+    Nothing configured is not a refusal here: (None, None, None) is how the
+    plain check learns to skip the cross-check. require_settings() is this same
+    read for a caller that cannot do without the account.
+    """
+    path = Path(path) if path is not None else CPANEL_JSON
+    where = str(path)
+
+    if path.is_file():
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                data = json.load(handle)
+        except ValueError as exc:
+            sys.exit("%s is not valid JSON (%s). It must be one object like %s."
+                     % (where, exc, CPANEL_HELP))
+        if not isinstance(data, dict):
+            sys.exit("%s must hold one JSON object like %s, not a %s."
+                     % (where, CPANEL_HELP, type(data).__name__))
+        absent = [key for key in ("host", "user", "token")
+                  if not str(data.get(key) or "").strip()]
+        if absent:
+            sys.exit("%s has no %s. All three of \"host\", \"user\" and \"token\""
+                     " are required, e.g. %s."
+                     % (where, " or ".join(absent), CPANEL_HELP))
+        host, user, token = [str(data[key]).strip()
+                             for key in ("host", "user", "token")]
+    else:
+        host, user, token = (os.environ.get(name) for name in CPANEL_ENV)
+        if not (host and user and token):
+            return None, None, None
+        host, user, token = host.strip(), user.strip(), token.strip()
+
+    if any(part in host for part in ("://", "/", ":")):
+        bare = host.split("://")[-1].split("/")[0].split(":")[0]
+        sys.exit("%s: \"host\" is a bare hostname, because this script adds"
+                 " https:// and :2083 itself. Write %r, not %r."
+                 % (where, bare, host))
+
+    return host, user, token
+
+
+def require_settings():
+    """host, user and token for a run that needs the account, or the refusal.
+
+    The one place a missing account becomes a message. Every request goes through
+    cpanel_call(), so a run that needs cPanel is told once, with the absolute path
+    -- not read twice by main() and again by the first call.
+    """
+    host, user, token = cpanel_settings()
+    if not (host and user and token):
+        sys.exit(missing_credentials())
+
+    return host, user, token
 
 
 def cpanel_call(path, **params):
     """One UAPI call. Errors carry cPanel's own message and never the token."""
-    host, user, token = cpanel_settings()
-    if not (host and user and token):
-        sys.exit("no cPanel credentials: write .sandbox/cpanel.json with host, user and"
-                 " token, or set CPANEL_HOST/CPANEL_USER/CPANEL_TOKEN."
-                 " Run without --plan/--apply for the DNS and HTTP check only.")
+    host, user, token = require_settings()
 
     query = urllib.parse.urlencode({"api.version": "1", **params})
     url = "https://%s:2083/execute/%s?%s" % (host, path, query)
@@ -410,6 +471,9 @@ def main():
 
     targets = gateway_hosts()
     if args.plan or args.apply:
+        # The first request reads the credentials file and refuses there, naming
+        # its absolute path, so a missing or malformed file is that one message
+        # rather than a refused call -- and the file is read once, not twice.
         account = plan(targets, listed_domains(), apply_changes=args.apply)
         print("\nChecking what the hosts actually answer\n")
     else:
