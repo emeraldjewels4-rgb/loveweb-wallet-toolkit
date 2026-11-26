@@ -210,15 +210,22 @@ def site_domain():
 
 CPANEL_ENV = ("CPANEL_HOST", "CPANEL_USER", "CPANEL_TOKEN")
 CPANEL_HELP = '{"host": "s22.infinitysrv.com", "user": "ACCOUNT", "token": "..."}'
+CPANEL_HINT = " Run without --plan/--apply for the DNS and HTTP check only."
 
 
-def missing_credentials(path=None):
-    """The one message for nothing usable being configured, naming both places."""
+def missing_credentials(path=None, next_step=None):
+    """The one message for nothing usable being configured, naming both places.
+
+    `next_step` is the caller's advice for what still works without credentials:
+    this script can check DNS and HTTP, sync_domains can read a saved list, and
+    the message should not name a flag the caller does not have.
+    """
     path = Path(path) if path is not None else CPANEL_JSON
+    next_step = CPANEL_HINT if next_step is None else " " + next_step.strip()
 
     return ("no cPanel credentials: write %s as one JSON object with \"host\","
-            " \"user\" and \"token\", or set CPANEL_HOST/CPANEL_USER/CPANEL_TOKEN."
-            " Run without --plan/--apply for the DNS and HTTP check only." % path)
+            " \"user\" and \"token\", or set CPANEL_HOST/CPANEL_USER/CPANEL_TOKEN.%s"
+            % (path, next_step))
 
 
 def cpanel_settings(path=None):
@@ -269,23 +276,28 @@ def cpanel_settings(path=None):
     return host, user, token
 
 
-def require_settings():
+def require_settings(next_step=None):
     """host, user and token for a run that needs the account, or the refusal.
 
     The one place a missing account becomes a message. Every request goes through
     cpanel_call(), so a run that needs cPanel is told once, with the absolute path
-    -- not read twice by main() and again by the first call.
+    -- not read twice by main() and again by the first call. `next_step` is the
+    caller's own advice, passed to missing_credentials().
     """
     host, user, token = cpanel_settings()
     if not (host and user and token):
-        sys.exit(missing_credentials())
+        sys.exit(missing_credentials(next_step=next_step))
 
     return host, user, token
 
 
-def cpanel_call(path, **params):
-    """One UAPI call. Errors carry cPanel's own message and never the token."""
-    host, user, token = require_settings()
+def cpanel_call(path, next_step=None, **params):
+    """One UAPI call. Errors carry cPanel's own message and never the token.
+
+    `next_step` is not a query parameter: it is the sentence the no-credentials
+    refusal ends with, for a caller that can still do something without an account.
+    """
+    host, user, token = require_settings(next_step)
 
     query = urllib.parse.urlencode({"api.version": "1", **params})
     url = "https://%s:2083/execute/%s?%s" % (host, path, query)
