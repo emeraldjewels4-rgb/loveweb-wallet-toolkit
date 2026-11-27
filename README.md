@@ -1098,15 +1098,23 @@ leg alone.
 ### `main` only takes commits CI has passed
 
 This is enforced by GitHub, on the server, against every machine. `main` is
-protected with the three matrix jobs as required status checks:
+protected with the four matrix jobs as required status checks:
 
 | setting | value |
 |---|---|
-| required checks | `suites (py 3.11)`, `suites (py 3.12)`, `suites (py 3.13)` |
+| required checks | `suites (py 3.11)`, `suites (py 3.12)`, `suites (py 3.13)`, `suites (py 3.14)` |
 | branches must be up to date | on |
 | applies to administrators | on |
 | required approvals | 0 |
 | force pushes / branch deletion | blocked |
+
+A branch whose base has moved is not mergeable even when every check is green:
+**branches must be up to date** means the PR head has to contain `main`. Bring it
+forward with a **rebase, not a merge** -- `test_merge_shape.py` fails any HEAD that
+contains a merge commit (`checking HEAD finds no unexpected merge commit`), so
+`git merge main` into a PR branch turns all four suite legs red on a PR that was
+green a minute earlier. The sequence that works is `git rebase main`, re-run
+`run_tests.py`, then `git push --force-with-lease`.
 
 The rule is available here because the repository is **public**: protected
 branches and rulesets come with GitHub Free for public repositories, and both
@@ -1119,12 +1127,12 @@ check runs, worded like this:
 
 ```
 remote: error: GH006: Protected branch update failed for refs/heads/main.
-remote: - 3 of 3 required status checks are expected.
+remote: - 4 of 4 required status checks are expected.
 ```
 
 `--no-verify` does not change that, because the push is refused by GitHub, not
 by anything on the machine. A red pull request is blocked the same way: the
-merge button stays disabled and the API answers `405 3 of 3 required status
+merge button stays disabled and the API answers `405 4 of 4 required status
 checks are failing`.
 
 The pre-push hook is still installed, now as a fast pre-flight rather than the
