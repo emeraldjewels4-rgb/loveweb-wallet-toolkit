@@ -48,9 +48,17 @@ and `x13.network` answer from dyna-ns.net, `mind.exchange` from helloserver.win 
 so the A/AAAA record belongs at that provider, not in a zone edit here. The check
 reports the missing record per host instead of pretending cPanel owns the zone.
 
-Exit status is 0 only when every host resolves and answers `chain.php` with
-`on = 01`; anything else exits non-zero, so a deploy cannot report success on a
-host that is still dark.
+A record that is missing does not always look missing: a zone wildcard answers for
+names that were never created, so a host can resolve, answer the interface, and
+still have no record of its own. The check resolves an invented name beside the
+hosts -- one label under the same parent, which no list can contain -- once per
+zone, and when that name answers with the host's address the run says the record is
+the wildcard's rather than the host's.
+
+Exit status is 0 only when every host resolves with a record of its own and
+answers `chain.php` with `on = 01`; anything else exits non-zero, so a deploy
+cannot report success on a host that is still dark, or on one a wildcard is
+answering for.
 """
 
 import argparse
@@ -365,6 +373,37 @@ def addresses(host):
     return {"v4": v4, "v6": v6, "error": None}
 
 
+# A label no target uses, so a name built from it exists only where the zone answers
+# for names that were never created. gateway_hosts() would refuse it, which is why it
+# cannot be mistaken for an omission or a target.
+INVENTED = "zzq7-not-a-host"
+
+
+def wildcard_name(host):
+    """A name beside host that nothing should serve: same parent, invented label.
+
+    Only the first label changes, because a wildcard sits one label above the host:
+    `*.metakakoon.x12.mx` answers for `web9999.metakakoon.x12.mx` and for any other
+    label in that place, invented or not. A deeper name would be answered by a
+    wildcard the host is not covered by, and a shallower one by nothing.
+    """
+    return INVENTED + host[host.index("."):]
+
+
+def wildcard_addresses(host, cache):
+    """What an invented name beside host resolves to, asked once per zone.
+
+    Cached by parent, so a second host in a zone already asked about is free and
+    the six real hosts -- one per zone -- cost one lookup each. `cache` is per run,
+    so a wildcard answer is never carried from one run to the next.
+    """
+    parent = host.split(".", 1)[1]
+    if parent not in cache:
+        cache[parent] = set(addresses(wildcard_name(host))["v4"])
+
+    return cache[parent]
+
+
 def probe(host):
     """What the host answers for the interface, over https then http."""
     for scheme in ("https", "http"):
@@ -397,16 +436,23 @@ def check(targets, account):
     else:
         print("  reference: %s did not resolve from here" % reference_host)
 
+    invented = {}
     problems = 0
     for host in targets:
         found = addresses(host)
+        wildcard = wildcard_addresses(host, invented)
         answer = probe(host)
         same = bool(set(found["v4"]) & reference)
+        borrowed = bool(found["v4"]) and set(found["v4"]) == wildcard
 
         print("\n  %s" % host)
         print("    dns    : A %s | AAAA %d record(s)%s" % (
             ", ".join(found["v4"]) or "none (%s)" % found["error"],
             len(found["v6"]), " (same server as %s)" % reference_host if same else ""))
+        if borrowed:
+            print("    zone   : %s does not exist either, and answers with the same"
+                  " address, so this A record is the wildcard's, not the host's own"
+                  % wildcard_name(host))
         print("    chain  : %s" % (
             "%s:// %s-> on=%02d" % (answer["scheme"], answer["status"], answer["on"])
             if answer["on"] is not None
@@ -418,6 +464,10 @@ def check(targets, account):
         elif not same:
             print("    needs  : the record points somewhere else; it must reach %s"
                   % reference_host)
+            problems += 1
+        elif borrowed:
+            print("    needs  : an A record for this host itself at the zone's provider,"
+                  " not only the wildcard that answers for every name under it")
             problems += 1
         elif answer["on"] != 1:
             print("    needs  : the domain added in cPanel with document root %s" % DOCUMENT_ROOT)
@@ -449,6 +499,25 @@ def check(targets, account):
     return problems == 0
 
 
+def apply_stopped(host, made, remaining, reason):
+    """Say what --apply created, then the refusal that stopped it. Never returns.
+
+    cpanel_call() exits the process on a refused or unreachable request, which used
+    to end an --apply run inside its loop: the domains created before the refusal
+    were not summed up anywhere, and the screen held one error with no statement of
+    how far the run had got. The count comes from the replies already in hand, not
+    from a second read, because the call that failed is the one that would have
+    re-read the account -- so this stops without claiming a state it never saw.
+    """
+    print("    %-38s stopped: %s" % (host, reason))
+    print("  created before the refusal: %d of %d%s"
+          % (len(made), len(made) + len(remaining),
+             " -- " + ", ".join(made) if made else " -- none"))
+    print("  not attempted: %s" % ", ".join(remaining))
+    print("  the account was not re-read: the call that failed is the one that would read it")
+    sys.exit(1)
+
+
 def plan(targets, existing, apply_changes):
     asking = account_identity()
     if asking:
@@ -475,17 +544,23 @@ def plan(targets, existing, apply_changes):
         print("  plan only: re-run with --apply to create them")
         return existing
 
-    for host in missing:
+    made = []
+    for position, host in enumerate(missing):
         labels = host.split(".")
-        reply = cpanel_call(
-            "SubDomain/addsubdomain",
-            domain=".".join(labels[:-2]),
-            rootdomain=".".join(labels[-2:]),
-            dir=DOCUMENT_ROOT,
-        )
+        try:
+            reply = cpanel_call(
+                "SubDomain/addsubdomain",
+                domain=".".join(labels[:-2]),
+                rootdomain=".".join(labels[-2:]),
+                dir=DOCUMENT_ROOT,
+            )
+        except SystemExit as refusal:
+            apply_stopped(host, made, missing[position:], refusal)
         status = reply.get("status")
         print("    %-38s %s" % (host, "created" if status == 1 else "refused"))
-        if status != 1:
+        if status == 1:
+            made.append(host)
+        else:
             for error in reply.get("errors") or ["no error text in the reply"]:
                 print("        %s" % error)
 
