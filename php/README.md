@@ -304,16 +304,17 @@ Run with a portable PHP 8.1.34 (NTS, x64) and no framework:
 
 ## Deployed
 
-Live on x10hosting's Infinity plan (server `s22.infinitysrv.com`), account `fiatgodx`, home `/home/fiatgodx`:
+The deployment this section records is on x10hosting's Infinity plan (server `s22.infinitysrv.com`), account `fiatgodx`, home `/home/fiatgodx`. **It is not publishing the toolkit today.** Checked on 2026-11-27: `/toolkit/` answers `200` with a placeholder page titled *toolkit/ — nothing published here yet*, `index.php`, `preview.php` and `db_sync.php` are `404`, and the one toolkit file still on the host, `chain.php`, answers `403` with `{"state":"denied","error":"this feed answers the page it is served with, not other callers"}` to anything that is not that page. So the URLs below are what was published when this section was written, and what the deploy workflow targets — a dated record, not a claim that they answer now:
 
-- `https://fiatgod.x10.mx/toolkit/` — status page, renders block, gas price, balances and plan.
-- `https://fiatgod.x10.mx/toolkit/preview.php?network=amoy` — JSON, `chain_id: 80002`, `signs: false`, plus a `database` health block.
-- MySQL attached: `fiatgodx_toolkit` (user of the same name, `ALL PRIVILEGES`). Credentials live only in `php/config.local.php` on the host.
+- `https://fiatgod.x10.mx/toolkit/` — then the status page: block, gas price, balances and plan. Today: the placeholder, `200`, and nothing of the toolkit on it.
+- `https://fiatgod.x10.mx/toolkit/preview.php?network=amoy` — then JSON with `chain_id: 80002`, `signs: false` and a `database` health block. Today `404`, as is `network=polygon`.
+- `https://fiatgod.x10.mx/toolkit/db_sync.php?action=ping` — then the route's file manifest and contract version. Today `404`.
+- MySQL attached: `fiatgodx_toolkit` (user of the same name, `ALL PRIVILEGES`), credentials only in `php/config.local.php` on the host. Not re-checked on 2026-11-27, because it needs the host's credentials; the `chain.php` refusal above is from the same host, so the account answers, but that says nothing about which files or databases are there.
 
-Uploaded over FTP through a dedicated account `toolkit@fiatgod.x10.mx` scoped to `/home/fiatgodx/public_html/toolkit`. Delete it in cPanel → FTP Accounts when it is no longer wanted (leave "Delete the User's Home Directory" unchecked, or the files go with it).
+The upload went over FTP as a dedicated account `toolkit@fiatgod.x10.mx` scoped to `/home/fiatgodx/public_html/toolkit`. Delete it in cPanel → FTP Accounts when it is no longer wanted (leave "Delete the User's Home Directory" unchecked, or the files go with it).
 
 The toolkit sits in a subdirectory on purpose: `public_html` serves the FiatLord SPA from `index.html`, and an `index.php` in the root can take over as `DirectoryIndex`.
 
 ## Notes for a local run
 
-Windows PHP ships no CA bundle, so a local run needs `curl.cainfo` pointing at a `cacert.pem` or every HTTPS RPC fails with `SSL certificate problem` (error 60). A Linux host uses the system store and needs nothing — the deployed copy works without any such setting.
+Windows PHP ships no CA bundle, so a local run needs `curl.cainfo` pointing at a `cacert.pem` or every HTTPS RPC fails with `SSL certificate problem` (error 60). A Linux host uses the system store and needs nothing — a copy on the Linux host works without any such setting.
