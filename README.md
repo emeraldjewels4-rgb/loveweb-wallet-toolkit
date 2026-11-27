@@ -683,8 +683,9 @@ wallet twice.
 
 **The live run, on Polygon mainnet:** 114 of the 500 wallets were funded with
 **8,771,929 LOVEWEB each** -- 999,999,906 tokens, the entire remaining supply --
-for **6,553,956 gas** across those 114 transfers -- plus the **46,909** the one
-attempt that reverted burned, for **6,600,865** on the run as a whole -- leaving
+for **6,553,956 gas** across those 114 transfers, summed from their receipts --
+plus the **46,909** the one attempt that reverted burned, for **6,600,865** on
+the run as a whole -- leaving
 94 LOVEWEB and 0.356 POL in the operator wallet at that point. The equality held
 when the run finished: every one of the 114 recipients held at least its share,
 and `operator + recipients == totalSupply` exactly. **It does not hold now**:
