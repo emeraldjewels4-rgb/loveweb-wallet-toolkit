@@ -306,6 +306,26 @@ def main() -> int:
           "a one-host list says the omission check did not run, not that it agreed")
     check(ok, "and that host is still checked, so a spot check is not refused outright")
 
+    rows = {"data": [
+        {"domain": "web9999.a.example", "servername": "a.example", "rootdomain": "example"},
+        {"domain": "shop.web9999.b.example", "servername": "web9999.b.example",
+         "rootdomain": "web9999.b.example"},
+    ]}
+    saved_call = g.cpanel_call
+    g.cpanel_call = lambda action: rows
+    try:
+        bound = g.listed_domains()
+    finally:
+        g.cpanel_call = saved_call
+    check(bound == {"web9999.a.example", "shop.web9999.b.example"},
+          "a row contributes its domain, the one name it binds")
+    check("web9999.b.example" not in bound,
+          "a gateway host named only as another row's servername is not bound")
+    ok, output = run_check(targets, bound)
+    check(not ok and "web9999.b.example\n    state  : in the list, not on the account"
+          in output,
+          "so that host in the list still fails: a zone is not read as a binding")
+
     print("\n=== 7. plan() asks once per missing host, and sends nothing under --plan ===")
     targets = ["web9999.a.example", "web9999.metakakoon.x12.mx"]
     existing = {"web9999.a.example"}

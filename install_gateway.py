@@ -350,6 +350,14 @@ def cpanel_call(path, next_step=None, **params):
 
 
 def listed_domains():
+    """The account's bindings as a set, one name per row that actually serves.
+
+    Only each row's `domain` is a binding. `servername` and `rootdomain` name the zone
+    a row sits in -- a deeper host bound under a gateway host carries that host in both
+    -- so taking them would report a parent zone or an alias as a bound host, and the
+    cross-check would pass a list entry cPanel never bound. sync_domains' reader has
+    always taken the domain alone; this is the same rule on the same reply.
+    """
     payload = cpanel_call("DomainInfo/list_domains")
     rows = payload.get("data")
     if not isinstance(rows, list):
@@ -360,10 +368,9 @@ def listed_domains():
     for row in rows:
         if not isinstance(row, dict):
             continue
-        for key in ("domain", "servername", "rootdomain"):
-            value = row.get(key)
-            if isinstance(value, str) and value:
-                names.add(value.lower())
+        value = row.get("domain")
+        if isinstance(value, str) and value:
+            names.add(value.lower())
 
     return names
 
