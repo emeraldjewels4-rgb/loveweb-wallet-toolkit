@@ -683,9 +683,11 @@ wallet twice.
 
 **The live run, on Polygon mainnet:** 114 of the 500 wallets were funded with
 **8,771,929 LOVEWEB each** -- 999,999,906 tokens, the entire remaining supply --
-for **6,600,865 gas**, leaving 94 LOVEWEB and 0.356 POL in the operator wallet at
-that point. Verified from the chain then: every one of the 114
-recipients held at least its share, and `operator + recipients == totalSupply`
+for **6,553,956 gas** across those 114 transfers -- plus the **46,909** the one
+attempt that reverted burned, for **6,600,865** on the run as a whole -- leaving
+94 LOVEWEB and 0.356 POL in the operator wallet at that point. Verified from
+the chain then: every one of the 114 recipients held at least its share, and
+`operator + recipients == totalSupply`
 exactly. **It does not hold now**: `wallets-500` #0 has since sent 29 LOVEWEB on
 (it holds **8,771,900**) and #1 sent 100,000 to the liquidity seeder (it holds
 **8,671,929**), so `operator + recipients` is **999,899,971** against a
