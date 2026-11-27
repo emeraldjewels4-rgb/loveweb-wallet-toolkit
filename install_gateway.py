@@ -48,16 +48,6 @@ and `x13.network` answer from dyna-ns.net, `mind.exchange` from helloserver.win 
 so the A/AAAA record belongs at that provider, not in a zone edit here. The check
 reports the missing record per host instead of pretending cPanel owns the zone.
 
-A record that is missing does not always look missing: a zone wildcard answers for
-names that were never created, so a host can resolve, answer the interface, and
-still have no record of its own. The check resolves an invented name beside the
-hosts -- one label under the same parent, which no list can contain -- once per
-zone, and when that name answers with the host's address the host is warned that
-the record is the wildcard's rather than its own. That is a warning, not a failure:
-the run's question is whether the host serves, and a wildcard that reaches this
-server answers it. The zone line in the host's block and the `warned:` count at the
-end are what keep it from passing silently.
-
 Exit status is 0 only when every host resolves and answers `chain.php` with
 `on = 01`; anything else exits non-zero, so a deploy cannot report success on a
 host that is still dark.
@@ -375,37 +365,6 @@ def addresses(host):
     return {"v4": v4, "v6": v6, "error": None}
 
 
-# A label no target uses, so a name built from it exists only where the zone answers
-# for names that were never created. gateway_hosts() would refuse it, which is why it
-# cannot be mistaken for an omission or a target.
-INVENTED = "zzq7-not-a-host"
-
-
-def wildcard_name(host):
-    """A name beside host that nothing should serve: same parent, invented label.
-
-    Only the first label changes, because a wildcard sits one label above the host:
-    `*.metakakoon.x12.mx` answers for `web9999.metakakoon.x12.mx` and for any other
-    label in that place, invented or not. A deeper name would be answered by a
-    wildcard the host is not covered by, and a shallower one by nothing.
-    """
-    return INVENTED + host[host.index("."):]
-
-
-def wildcard_addresses(host, cache):
-    """What an invented name beside host resolves to, asked once per zone.
-
-    Cached by parent, so a second host in a zone already asked about is free and
-    the six real hosts -- one per zone -- cost one lookup each. `cache` is per run,
-    so a wildcard answer is never carried from one run to the next.
-    """
-    parent = host.split(".", 1)[1]
-    if parent not in cache:
-        cache[parent] = set(addresses(wildcard_name(host))["v4"])
-
-    return cache[parent]
-
-
 def probe(host):
     """What the host answers for the interface, over https then http."""
     for scheme in ("https", "http"):
@@ -438,25 +397,16 @@ def check(targets, account):
     else:
         print("  reference: %s did not resolve from here" % reference_host)
 
-    invented = {}
-    warned = 0
     problems = 0
     for host in targets:
         found = addresses(host)
-        wildcard = wildcard_addresses(host, invented)
         answer = probe(host)
         same = bool(set(found["v4"]) & reference)
-        borrowed = bool(found["v4"]) and set(found["v4"]) == wildcard
 
         print("\n  %s" % host)
         print("    dns    : A %s | AAAA %d record(s)%s" % (
             ", ".join(found["v4"]) or "none (%s)" % found["error"],
             len(found["v6"]), " (same server as %s)" % reference_host if same else ""))
-        if borrowed:
-            print("    zone   : %s does not exist either, and answers with the same"
-                  " address, so this A record is the wildcard's, not the host's own"
-                  % wildcard_name(host))
-            warned += 1
         print("    chain  : %s" % (
             "%s:// %s-> on=%02d" % (answer["scheme"], answer["status"], answer["on"])
             if answer["on"] is not None
@@ -493,11 +443,6 @@ def check(targets, account):
             problems += 1
         if not (extras or absent):
             print("\n  account: cPanel and the list agree on every gateway host")
-
-    if warned:
-        print("\n  warned: %d of %d host(s) resolve through a zone wildcard, so their A"
-              " records are not their own -- the run does not fail on that alone"
-              % (warned, len(targets)))
 
     print("\n  %d of %d hosts still need work" % (problems, len(targets)))
 
