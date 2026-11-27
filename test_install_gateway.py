@@ -8,12 +8,13 @@ simply behind the account. Each of those is a case here.
 
 The sixth section drives check() itself with DNS, HTTP and SITE_DOMAIN stubbed
 out, so the omission report under test is the one that runs, not a description of
-it. The next one covers the record a wildcard answers for: an invented name beside
-the hosts that answers with their address is reported as the zone's, not the host's
-own. The one after that does the same for plan(), with cpanel_call() stubbed: --plan
+it. The one after it does the same for plan(), with cpanel_call() stubbed: --plan
 is asserted to send nothing, --apply to send one addsubdomain per missing host
 with the arguments the call actually receives, and the summary to be the re-read
-rather than the hope. The last three cover the credentials and the account: the preflight in
+rather than the hope. The section after those drives addresses() and probe() themselves,
+offline -- a JSON body, a body that is not JSON, an HTTP error and a transport failure --
+because those two answers are what check() turns into an exit code, and until then they
+were only implied by the stubs around them. The last three cover the credentials and the account: the preflight in
 install_gateway, where a file in the wrong folder or with a scheme in its host used
 to reach cPanel as a refused call instead of a message naming the path; the same
 reader reached through sync_domains.names_from_cpanel(), where a refused call used
@@ -93,24 +94,10 @@ def write_list(text, newline=""):
     return Path(handle.name)
 
 
-def run_check(targets, account, dns=None):
-    """check() with DNS, HTTP and SITE_DOMAIN stubbed; returns (ok, output).
-
-    `dns` answers with the v4 addresses one name has, and is asked for the real hosts
-    and for the invented name beside them alike. Left out, every name resolves and
-    the invented one does not, so a wildcard is a miss unless a case asks for one.
-    """
-    def answer(host):
-        if dns is not None:
-            v4 = dns(host)
-        elif host.startswith(g.INVENTED + "."):
-            v4 = []
-        else:
-            v4 = ["192.0.2.10"]
-        return {"v4": v4, "v6": [], "error": None if v4 else "no addresses"}
-
+def run_check(targets, account):
+    """check() with DNS, HTTP and SITE_DOMAIN stubbed; returns (ok, output)."""
     saved = (g.addresses, g.probe, g.site_domain, g.account_identity)
-    g.addresses = answer
+    g.addresses = lambda host: {"v4": ["192.0.2.10"], "v6": [], "error": None}
     g.probe = lambda host: {"scheme": "https", "status": 200, "on": 1, "detail": "toolkit"}
     g.site_domain = lambda: "example.org"
     g.account_identity = lambda: "acct on s22.infinitysrv.com"
@@ -209,6 +196,38 @@ def refuse_cpanel(status, body, seen=None):
             seen.append(request)
         raise urllib.error.HTTPError(request.full_url, status, "refused", {},
                                      io.BytesIO(body.encode("utf-8")))
+
+    return fake
+
+
+def serve_probe(body, status=200, seen=None):
+    """A urlopen stand-in answering with a body, recording each URL and timeout."""
+    class Reply:
+        def __init__(self):
+            self.body = body if isinstance(body, bytes) else body.encode("utf-8")
+            self.status = status
+
+        def read(self, size=None):
+            return self.body if size is None else self.body[:size]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake(url, timeout=None):
+        if seen is not None:
+            seen.append((url, timeout))
+        return Reply()
+
+    return fake
+
+
+def fail_probe(make_error):
+    """A urlopen stand-in that raises what make_error(url) builds, for each scheme."""
+    def fake(url, timeout=None):
+        raise make_error(url)
 
     return fake
 
@@ -312,43 +331,37 @@ def main() -> int:
     check(not ok, "a listed host the account does not have fails too")
     check("not on the account" in output, "and points at --plan as the way to create it")
 
-    print("\n=== 7. an address the zone's wildcard answers for is not the host's own ===")
-    check(g.wildcard_name("web9999.metakakoon.x12.mx")
-          == "zzq7-not-a-host.metakakoon.x12.mx",
-          "the invented name sits beside the host, one label under the same parent")
-    check(not g.GATEWAY.match(g.INVENTED + ".metakakoon.x12.mx"),
-          "and it is not a gateway host, so it cannot become a target or an omission")
+    check(g.group_is_comparable(targets),
+          "a list of two hosts gives a group wide enough to compare against the account")
+    check(not g.group_is_comparable(["web9999.a.example"]),
+          "one host's group is its own parent, so no other name could sit under it")
+    ok, output = run_check(["web9999.a.example"],
+                           {"web9999.a.example", "web9999.b.example"})
+    check("did not run" in output and "too short" in output,
+          "a one-host list says the omission check did not run, not that it agreed")
+    check(ok, "and that host is still checked, so a spot check is not refused outright")
 
-    zone = ["web9999.x.example", "ww9999.x.example"]
-    asked = []
+    rows = {"data": [
+        {"domain": "web9999.a.example", "servername": "a.example", "rootdomain": "example"},
+        {"domain": "shop.web9999.b.example", "servername": "web9999.b.example",
+         "rootdomain": "web9999.b.example"},
+    ]}
+    saved_call = g.cpanel_call
+    g.cpanel_call = lambda action: rows
+    try:
+        bound = g.listed_domains()
+    finally:
+        g.cpanel_call = saved_call
+    check(bound == {"web9999.a.example", "shop.web9999.b.example"},
+          "a row contributes its domain, the one name it binds")
+    check("web9999.b.example" not in bound,
+          "a gateway host named only as another row's servername is not bound")
+    ok, output = run_check(targets, bound)
+    check(not ok and "web9999.b.example\n    state  : in the list, not on the account"
+          in output,
+          "so that host in the list still fails: a zone is not read as a binding")
 
-    def wildcard_answers(host):
-        asked.append(host)
-        return ["192.0.2.99"]
-
-    ok, output = run_check(zone, None, dns=wildcard_answers)
-    check(ok, "a host that resolves through the wildcard and serves still passes the run")
-    check(output.count("not the host's own") == 2,
-          "but every host in that zone is warned, not just the first")
-    check("warned: 2 of 2 host(s)" in output,
-          "and the warnings are counted at the end, so they do not pass silently")
-    check([name for name in asked if name.startswith(g.INVENTED + ".")]
-          == [g.INVENTED + ".x.example"],
-          "the invented name is resolved once for the zone, not once per host")
-
-    def invented_elsewhere(host):
-        return ["192.0.2.99"] if host.startswith(g.INVENTED + ".") else ["192.0.2.10"]
-
-    ok, output = run_check(zone, None, dns=invented_elsewhere)
-    check(ok, "a host with its own record still passes while the wildcard answers")
-    check("not the host's own" not in output,
-          "and nothing is blamed on the wildcard when the host has an address of its own")
-
-    ok, output = run_check(["web9999.dark.example"], None, dns=lambda host: [])
-    check(not ok and "A/AAAA record" in output and "not the host's own" not in output,
-          "a host with no address at all is missing its record, not borrowing one")
-
-    print("\n=== 8. plan() asks once per missing host, and sends nothing under --plan ===")
+    print("\n=== 7. plan() asks once per missing host, and sends nothing under --plan ===")
     targets = ["web9999.a.example", "web9999.metakakoon.x12.mx"]
     existing = {"web9999.a.example"}
 
@@ -405,7 +418,7 @@ def main() -> int:
     check("after apply" not in output and "was not re-read" in output,
           "with no post-apply count, because the account was never re-read")
 
-    print("\n=== 9. the credentials file is checked before a request is built ===")
+    print("\n=== 8. the credentials file is checked before a request is built ===")
     with tempfile.TemporaryDirectory() as folder:
         where = Path(folder) / "cpanel.json"
         message = g.missing_credentials(where)
@@ -460,7 +473,7 @@ def main() -> int:
                 else:
                     os.environ[name] = value
 
-    print("\n=== 10. sync_domains reads the same file, and refuses the same way ===")
+    print("\n=== 9. sync_domains reads the same file, and refuses the same way ===")
     rows = {"data": [
         {"domain": "a.example", "servername": "a.example", "rootdomain": "example"},
         {"domain": "b.example"},
@@ -530,7 +543,7 @@ def main() -> int:
                 if value is not None:
                     os.environ[name] = value
 
-    print("\n=== 11. the account being asked is named, and the token is not ===")
+    print("\n=== 10. the account being asked is named, and the token is not ===")
     targets = ["web9999.a.example", "web9999.b.example"]
     ok, output = run_check(targets, set(targets) | {"web9999.dark.example"})
     check("account: asking cPanel as acct on s22.infinitysrv.com" in output,
@@ -584,6 +597,89 @@ def main() -> int:
     check(output.index("asking cPanel") < output.index("cPanel lists"),
           "and does so before the list it is about to compare")
     check(calls == [], "that plan run still sends no request")
+
+    print("\n=== 11. addresses() and probe() answer offline, and say how ===")
+    records = [
+        (g.socket.AF_INET, None, None, None, ("192.0.2.10", 0)),
+        (g.socket.AF_INET, None, None, None, ("192.0.2.10", 0)),
+        (g.socket.AF_INET, None, None, None, ("192.0.2.11", 0)),
+        (g.socket.AF_INET6, None, None, None, ("2001:db8::1", 0, 0, 0)),
+        (g.socket.AF_INET6, None, None, None, ("2001:db8::2", 0, 0, 0)),
+    ]
+    saved_dns = g.socket.getaddrinfo
+    g.socket.getaddrinfo = lambda host, port=None: records
+    try:
+        found = g.addresses("web9999.a.example")
+    finally:
+        g.socket.getaddrinfo = saved_dns
+    check(found == {"v4": ["192.0.2.10", "192.0.2.11"],
+                    "v6": ["2001:db8::1", "2001:db8::2"], "error": None},
+          "a reply with both families is sorted unique v4 and v6, with the repeat dropped")
+
+    def no_answer(host, port=None):
+        raise g.socket.gaierror(-2, "Name or service not known")
+
+    g.socket.getaddrinfo = no_answer
+    try:
+        found = g.addresses("web9999.dark.example")
+    finally:
+        g.socket.getaddrinfo = saved_dns
+    check(found["v4"] == [] and found["v6"] == [],
+          "the resolver having no answer is two empty lists, not an exception here")
+    check("Name or service not known" in (found["error"] or ""),
+          "and the resolver's own text is carried, so the run can say why")
+
+    asked = []
+    saved_url = g.urllib.request.urlopen
+    g.urllib.request.urlopen = serve_probe('{"on": 1, "label": "toolkit"}', seen=asked)
+    try:
+        answer = g.probe("web9999.a.example")
+    finally:
+        g.urllib.request.urlopen = saved_url
+    check(answer == {"scheme": "https", "status": 200, "on": 1, "detail": "toolkit"},
+          "a JSON body is the interface: its on and label are what the verdict reads")
+    check(asked[0] == ("https://web9999.a.example/chain.php?format=json", 12),
+          "https is asked first, at the path the interface serves, with the timeout set")
+
+    g.urllib.request.urlopen = serve_probe("<html>not the interface</html>")
+    try:
+        answer = g.probe("web9999.a.example")
+    finally:
+        g.urllib.request.urlopen = saved_url
+    check(answer == {"scheme": "https", "status": 200, "on": None,
+                     "detail": "answered, but not the interface"},
+          "a body that is not JSON is not read as an on of None, but named as the wrong page")
+
+    g.urllib.request.urlopen = fail_probe(
+        lambda url: g.urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b"gone")))
+    try:
+        answer = g.probe("web9999.a.example")
+    finally:
+        g.urllib.request.urlopen = saved_url
+    check(answer == {"scheme": "http", "status": 404, "on": None, "detail": "HTTP 404"},
+          "an HTTP error keeps its status, after https and http have both been tried")
+
+    def refuse_https(url, timeout=None):
+        if url.startswith("https://"):
+            raise g.urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b"gone"))
+        return serve_probe('{"on": 0, "label": "old"}')(url, timeout)
+
+    g.urllib.request.urlopen = refuse_https
+    try:
+        answer = g.probe("web9999.a.example")
+    finally:
+        g.urllib.request.urlopen = saved_url
+    check(answer == {"scheme": "http", "status": 200, "on": 0, "detail": "old"},
+          "https failing does not decide the verdict: http's answer is the one reported")
+
+    g.urllib.request.urlopen = fail_probe(
+        lambda url: g.urllib.error.URLError("connection refused"))
+    try:
+        answer = g.probe("web9999.a.example")
+    finally:
+        g.urllib.request.urlopen = saved_url
+    check(answer == {"scheme": "http", "status": None, "on": None, "detail": "URLError"},
+          "a transport failure is named by its exception, with no status to report")
 
     print("\n" + "=" * 60)
     if FAILED:

@@ -765,7 +765,7 @@ The four contract suites read `build/ProjectToken.json`, which the setup block i
 [Contributing](#contributing) builds; build it once per checkout.
 
 ```bash
-python run_tests.py            # everything below + the audit: 1417 checks
+python run_tests.py            # everything below + the audit: 1424 checks
 
 python test_no_secrets.py      # 20 checks
 python test_token.py           # 162 checks
@@ -794,7 +794,7 @@ python test_compare_legs.py    # 10 checks
 python test_suite_output.py    # 7 checks
 python test_php_surface.py     # 18 checks
 python test_sync_client.py     # 73 checks
-python test_install_gateway.py # 85 checks
+python test_install_gateway.py # 92 checks
 python test_truncated_export.py  # 16 checks
 python mutation_check.py       # 11 checks
 python test_row_key_parity.py  # 34 checks
@@ -823,7 +823,14 @@ compares that list against `DomainInfo/list_domains`, failing on a host in the
 list's own group that the account serves and the list omits. The group is derived
 from the list rather than matched by the wider `w*9999.` shape, so the account's
 twenty-eight `ww9999.*` siblings -- same shape, different targets -- are not
-reported as omissions the list was never meant to name. With credentials, the
+reported as omissions the list was never meant to name. A row on that account contributes only its `domain` --
+the one name it binds -- because `servername` and `rootdomain` name the zone the
+row sits in, and a deeper host bound under a gateway host carries that host in
+both, so reading them would pass a list entry cPanel never bound. A list of one
+name gives a group that is that host's own parent, so nothing else can sit
+under it and the run says the omission check did not run rather than that the
+list and the account agree -- while still checking that host's DNS and HTTP.
+With credentials, the
 file is checked before the first request: `.sandbox/cpanel.json` must exist,
 parse as one object carrying `host`, `user` and `token`, and hold a bare
 hostname -- no scheme, no `:2083` -- and every refusal names the absolute path
@@ -832,14 +839,6 @@ looking like cPanel refusing. A credentialed run also names the account it
 asked -- the cPanel user and the bare host, never the token -- in `--plan` and
 before the cross-check, because a token for another account answers with another
 list and would otherwise read as omissions rather than as the wrong credential.
-
-A host resolving is not the same as a host having a record: a zone wildcard
-answers for names that were never created, so the check also resolves an
-invented name beside the hosts -- one label under the same parent, which no
-list can contain -- once per zone, and when that name answers with the host's
-address the run warns that the record is the wildcard's, not the host's: the
-zone line names it inside the host's block, a `warned:` line counts it at the
-end, and a host that serves is not failed for it.
 
 An `--apply` run that is refused part-way does not leave that to be inferred
 from the lines above the error: it names the domains it created before the
@@ -941,7 +940,7 @@ That check has run: every leg installs the same **64 packages**, 3.11, 3.12 and
 3.13 to the identical set, and 3.14 differing in exactly one line --
 `coincurve==22.0.0` from `constraints-py3.14.txt`, built from source because no
 cp314 wheel is published -- with every leg passing every suite, and every leg
-reporting the same **1417** checks.
+reporting the same **1424** checks.
 If a pin genuinely cannot work on one interpreter, a
 `constraints-py<minor>.txt` override is preferred for that leg alone.
 
@@ -1053,7 +1052,7 @@ Three checks, because "the call sites look fine" is not evidence:
   the suite to name it in its summary and return 1. A suite that prints
   `ALL CHECKS PASSED` with a seeded failure fails this check.
 
-Result on the current tree: **1334 `check()` call sites, 0 swapped**, every guard
+Result on the current tree: **1341 `check()` call sites, 0 swapped**, every guard
   rejects a swapped call, and all seventeen suites report a seeded failure with exit 1.
 The auditor was itself verified by planting the exact original bug (an f-string
 condition with a boolean label) in a copy of a suite and confirming it is caught.
