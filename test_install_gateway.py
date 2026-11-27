@@ -296,6 +296,16 @@ def main() -> int:
     check(not ok, "a listed host the account does not have fails too")
     check("not on the account" in output, "and points at --plan as the way to create it")
 
+    check(g.group_is_comparable(targets),
+          "a list of two hosts gives a group wide enough to compare against the account")
+    check(not g.group_is_comparable(["web9999.a.example"]),
+          "one host's group is its own parent, so no other name could sit under it")
+    ok, output = run_check(["web9999.a.example"],
+                           {"web9999.a.example", "web9999.b.example"})
+    check("did not run" in output and "too short" in output,
+          "a one-host list says the omission check did not run, not that it agreed")
+    check(ok, "and that host is still checked, so a spot check is not refused outright")
+
     print("\n=== 7. plan() asks once per missing host, and sends nothing under --plan ===")
     targets = ["web9999.a.example", "web9999.metakakoon.x12.mx"]
     existing = {"web9999.a.example"}

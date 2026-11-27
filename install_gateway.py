@@ -149,9 +149,10 @@ def gateway_group(targets):
     meant to install: the check could never pass.
 
     Read from the list, so a list that moves to another group takes the pattern with
-    it and this file holds no group name. Names sharing no namespace are a refusal --
+    it and this file holds no group name.     Names sharing no namespace are a refusal --
     with no common group the pattern would match the whole account, which is the
-    behaviour being removed.
+    behaviour being removed. A group this reads off a single name is only that host's
+    parent; group_is_comparable() is how a caller tells the two apart.
     """
     prefix = os.path.commonprefix(list(targets))
     cut = prefix.rfind(".")
@@ -160,6 +161,20 @@ def gateway_group(targets):
                  " there is nothing to compare the account against" % sorted(targets))
 
     return prefix[:cut + 1]
+
+
+def group_is_comparable(targets):
+    """Whether the group is wider than one host's own parent.
+
+    A one-name list derives a group that is that host's parent, and no other name can
+    sit under it: the "the account serves a gateway host the list omits" direction has
+    nothing to compare, and reporting agreement there would claim a comparison that
+    never happened. Two names in one group always sit in different parents, so the
+    group is wider than either and both directions mean something.
+    """
+    group = gateway_group(targets)
+
+    return any(group != host.rsplit(".", 1)[0] + "." for host in targets)
 
 
 def omissions(targets, account):
@@ -428,6 +443,10 @@ def check(targets, account):
     if account is None:
         print("\n  account: no cPanel credentials, so the list was not compared with"
               " what cPanel serves -- the omission check did not run")
+    elif not group_is_comparable(targets):
+        print("\n  account: the list is too short to give a group -- one name's group is"
+              " that host's own parent, so nothing else can sit under it -- and the"
+              " omission check did not run")
     else:
         asking = account_identity()
         if asking:
