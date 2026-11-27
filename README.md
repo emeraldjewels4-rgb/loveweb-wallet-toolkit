@@ -683,9 +683,16 @@ wallet twice.
 
 **The live run, on Polygon mainnet:** 114 of the 500 wallets were funded with
 **8,771,929 LOVEWEB each** -- 999,999,906 tokens, the entire remaining supply --
-for **6,600,865 gas**, leaving 94 LOVEWEB and 0.356 POL in the operator wallet.
-Verified afterwards from the chain: every one of the 114 recipients holds at
-least its share, and `operator + recipients == totalSupply` exactly.
+for **6,553,956 gas** across those 114 transfers, summed from their receipts --
+plus the **46,909** the one attempt that reverted burned, for **6,600,865** on
+the run as a whole -- leaving
+94 LOVEWEB and 0.356 POL in the operator wallet at that point. The equality held
+when the run finished: every one of the 114 recipients held at least its share,
+and `operator + recipients == totalSupply` exactly. **It does not hold now**:
+two wallets have since sent tokens on -- `wallets-500` #0 sent 29 (it holds
+**8,771,900**) and #1 sent 100,000 to the liquidity seeder (it holds
+**8,671,929**) -- so `operator + recipients` is **999,899,971** against a
+1,000,000,000 supply, the 100,029 that has left those two wallets since.
 
 Three real defects surfaced during that run, and all three are now fixed with
 tests:
@@ -982,8 +989,9 @@ Fifteen transfers have happened since that distribution, and the export shows
 all of them:
 
 - **29 LOVEWEB left wallet #0** (8,771,929 -> 8,771,900) to the contract
-  `0x4EEA541a…762b61a5`, which pushed 10 through the 0x exchange proxy
-  `0xc590175E…74c02b` and on to `0x394767C0…f5d1B9`. Wallet #0 has a nonce of 2
+  `0x4EEA541a…762b61a5`, which still holds 19 of it: the other 10 left
+  in one transaction through two contracts that now hold none,
+  `0xc590175E…4c02b` and `0x337685fd…cc3e2`. Wallet #0 has a nonce of 2
   and 113 of the 114 have never sent anything: somebody else holds or held that
   key, which is why the phrase behind this set should be treated as leaked.
 - **100,000 LOVEWEB moved from wallet #1 to a seeder wallet** for a liquidity
