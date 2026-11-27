@@ -88,16 +88,17 @@ def write_list(text, newline=""):
 
 def run_check(targets, account):
     """check() with DNS, HTTP and SITE_DOMAIN stubbed; returns (ok, output)."""
-    saved = (g.addresses, g.probe, g.site_domain)
+    saved = (g.addresses, g.probe, g.site_domain, g.account_identity)
     g.addresses = lambda host: {"v4": ["192.0.2.10"], "v6": [], "error": None}
     g.probe = lambda host: {"scheme": "https", "status": 200, "on": 1, "detail": "toolkit"}
     g.site_domain = lambda: "example.org"
+    g.account_identity = lambda: "acct on s22.infinitysrv.com"
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
             return g.check(targets, account), out.getvalue()
     finally:
-        g.addresses, g.probe, g.site_domain = saved
+        g.addresses, g.probe, g.site_domain, g.account_identity = saved
 
 
 def serve_cpanel(payload, seen=None):
@@ -359,6 +360,61 @@ def main() -> int:
             for name, value in saved_env.items():
                 if value is not None:
                     os.environ[name] = value
+
+    print("\n=== 9. the account being asked is named, and the token is not ===")
+    targets = ["web9999.a.example", "web9999.b.example"]
+    ok, output = run_check(targets, set(targets) | {"web9999.dark.example"})
+    check("account: asking cPanel as acct on s22.infinitysrv.com" in output,
+          "check() names the account it asked before comparing itself with it")
+    check(output.index("asking cPanel") < output.index("not in the list"),
+          "and names it before the omission report, not after it")
+
+    ok, output = run_check(targets, None)
+    check("asking cPanel" not in output,
+          "with no credentials it makes no claim about which account was asked")
+
+    saved_json = g.CPANEL_JSON
+    saved_env = {name: os.environ.pop(name, None) for name in g.CPANEL_ENV}
+    with tempfile.TemporaryDirectory() as folder:
+        where = Path(folder) / "cpanel.json"
+        where.write_text('{"host": "s22.infinitysrv.com", "user": "acct",'
+                         ' "token": "tok-secret"}', encoding="utf-8")
+        g.CPANEL_JSON = where
+        try:
+            asking = g.account_identity()
+        finally:
+            g.CPANEL_JSON = saved_json
+        check(asking == "acct on s22.infinitysrv.com",
+              "the identity is the user and the bare host")
+        check("tok-secret" not in (asking or ""), "and the token is not part of it")
+
+        g.CPANEL_JSON = Path(folder) / "absent.json"
+        try:
+            check(g.account_identity() is None,
+                  "no file and no variables means there is no account to name")
+        finally:
+            g.CPANEL_JSON = saved_json
+    for name, value in saved_env.items():
+        if value is not None:
+            os.environ[name] = value
+
+    calls = []
+    saved_plan = (g.cpanel_call, g.listed_domains, g.account_identity)
+    g.cpanel_call = lambda path, **params: calls.append(path) or {"status": 1}
+    g.listed_domains = lambda: set(targets)
+    g.account_identity = lambda: "acct on s22.infinitysrv.com"
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            g.plan(targets, set(targets), apply_changes=False)
+    finally:
+        g.cpanel_call, g.listed_domains, g.account_identity = saved_plan
+    output = out.getvalue()
+    check("account: asking cPanel as acct on s22.infinitysrv.com" in output,
+          "a --plan run names it too, so a wrong token is visible before anything is created")
+    check(output.index("asking cPanel") < output.index("cPanel lists"),
+          "and does so before the list it is about to compare")
+    check(calls == [], "that plan run still sends no request")
 
     print("\n" + "=" * 60)
     if FAILED:
