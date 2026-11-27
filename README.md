@@ -715,9 +715,17 @@ tests:
 
 ### Seeding a liquidity pool
 
-[seed_pool.py](seed_pool.py) creates the QuickSwap V2 token/POL pair and seeds
-it in one go: `approve()` the router for the exact deposit, then
-`addLiquidityETH`. Dry run by default, like every other script here.
+[seed_pool.py](seed_pool.py) would create a QuickSwap V2 token/POL pool and
+seed it in one go: `approve()` the router for the exact deposit, then
+`addLiquidityETH`. Dry run by default, like every other script here -- and
+**it has not been run on Polygon.** No `seed-pool-<network>.json` record
+exists for any network, and no LOVEWEB pool exists: `getPair` on QuickSwap
+V2, Sushi V2 and the Algebra v3 and v4 factories, and `getPool` on Uniswap
+V3 at 1%, 0.3%, 0.05% and 0.01%, all return the zero address for LOVEWEB
+against both WPOL and USDC. A factory's `getPair` is permanent, so those
+zeroes mean no pair was ever created, not that liquidity was added and
+later removed. The 100,000 LOVEWEB set aside for it sit in a contract the
+seeder wallet deployed (`0xc47abbb4…`), not in a pool.
 
 ```bash
 python seed_pool.py --network polygon --i-know-this-is-mainnet \
@@ -726,10 +734,10 @@ python seed_pool.py --network polygon --i-know-this-is-mainnet \
 python seed_pool.py ... --execute --yes                        # approve + seed
 ```
 
-**The ratio is the price.** 100,000 tokens against 5 POL puts every token at
-`0.00005` POL and implies a 50,000 POL valuation for the full 1,000,000,000
-supply. There is no way to add liquidity without choosing that, and whatever it
-is set to is what the first buyer pays.
+**The ratio would be the price.** Run that way, 100,000 tokens against 5 POL
+would put every token at `0.00005` POL and imply a 50,000 POL valuation for
+the full 1,000,000,000 supply. There is no way to add liquidity without
+choosing that, and whatever it is set to is what the first buyer pays.
 
 Three things it refuses to do:
 
