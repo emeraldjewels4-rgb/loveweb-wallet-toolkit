@@ -327,9 +327,11 @@ def main() -> int:
         return ["192.0.2.99"]
 
     ok, output = run_check(zone, None, dns=wildcard_answers)
-    check(not ok, "a host whose address is the wildcard's does not pass as serving")
+    check(ok, "a host that resolves through the wildcard and serves still passes the run")
     check(output.count("not the host's own") == 2,
-          "and every host in that zone is named, not just the first")
+          "but every host in that zone is warned, not just the first")
+    check("warned: 2 of 2 host(s)" in output,
+          "and the warnings are counted at the end, so they do not pass silently")
     check([name for name in asked if name.startswith(g.INVENTED + ".")]
           == [g.INVENTED + ".x.example"],
           "the invented name is resolved once for the zone, not once per host")

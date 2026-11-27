@@ -52,13 +52,15 @@ A record that is missing does not always look missing: a zone wildcard answers f
 names that were never created, so a host can resolve, answer the interface, and
 still have no record of its own. The check resolves an invented name beside the
 hosts -- one label under the same parent, which no list can contain -- once per
-zone, and when that name answers with the host's address the run says the record is
-the wildcard's rather than the host's.
+zone, and when that name answers with the host's address the host is warned that
+the record is the wildcard's rather than its own. That is a warning, not a failure:
+the run's question is whether the host serves, and a wildcard that reaches this
+server answers it. The zone line in the host's block and the `warned:` count at the
+end are what keep it from passing silently.
 
-Exit status is 0 only when every host resolves with a record of its own and
-answers `chain.php` with `on = 01`; anything else exits non-zero, so a deploy
-cannot report success on a host that is still dark, or on one a wildcard is
-answering for.
+Exit status is 0 only when every host resolves and answers `chain.php` with
+`on = 01`; anything else exits non-zero, so a deploy cannot report success on a
+host that is still dark.
 """
 
 import argparse
@@ -437,6 +439,7 @@ def check(targets, account):
         print("  reference: %s did not resolve from here" % reference_host)
 
     invented = {}
+    warned = 0
     problems = 0
     for host in targets:
         found = addresses(host)
@@ -453,6 +456,7 @@ def check(targets, account):
             print("    zone   : %s does not exist either, and answers with the same"
                   " address, so this A record is the wildcard's, not the host's own"
                   % wildcard_name(host))
+            warned += 1
         print("    chain  : %s" % (
             "%s:// %s-> on=%02d" % (answer["scheme"], answer["status"], answer["on"])
             if answer["on"] is not None
@@ -464,10 +468,6 @@ def check(targets, account):
         elif not same:
             print("    needs  : the record points somewhere else; it must reach %s"
                   % reference_host)
-            problems += 1
-        elif borrowed:
-            print("    needs  : an A record for this host itself at the zone's provider,"
-                  " not only the wildcard that answers for every name under it")
             problems += 1
         elif answer["on"] != 1:
             print("    needs  : the domain added in cPanel with document root %s" % DOCUMENT_ROOT)
@@ -493,6 +493,11 @@ def check(targets, account):
             problems += 1
         if not (extras or absent):
             print("\n  account: cPanel and the list agree on every gateway host")
+
+    if warned:
+        print("\n  warned: %d of %d host(s) resolve through a zone wildcard, so their A"
+              " records are not their own -- the run does not fail on that alone"
+              % (warned, len(targets)))
 
     print("\n  %d of %d hosts still need work" % (problems, len(targets)))
 
