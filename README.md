@@ -715,9 +715,17 @@ tests:
 
 ### Seeding a liquidity pool
 
-[seed_pool.py](seed_pool.py) creates the QuickSwap V2 token/POL pair and seeds
-it in one go: `approve()` the router for the exact deposit, then
-`addLiquidityETH`. Dry run by default, like every other script here.
+[seed_pool.py](seed_pool.py) would create a QuickSwap V2 token/POL pool and
+seed it in one go: `approve()` the router for the exact deposit, then
+`addLiquidityETH`. Dry run by default, like every other script here -- and
+**it has not been run on Polygon.** No `seed-pool-<network>.json` record
+exists for any network, and no LOVEWEB pool exists: `getPair` on QuickSwap
+V2, Sushi V2 and the Algebra v3 and v4 factories, and `getPool` on Uniswap
+V3 at 1%, 0.3%, 0.05% and 0.01%, all return the zero address for LOVEWEB
+against both WPOL and USDC. A factory's `getPair` is permanent, so those
+zeroes mean no pair was ever created, not that liquidity was added and
+later removed. The 100,000 LOVEWEB set aside for it sit in a contract the
+seeder wallet deployed (`0xc47abbb4…`), not in a pool.
 
 ```bash
 python seed_pool.py --network polygon --i-know-this-is-mainnet \
@@ -726,10 +734,10 @@ python seed_pool.py --network polygon --i-know-this-is-mainnet \
 python seed_pool.py ... --execute --yes                        # approve + seed
 ```
 
-**The ratio is the price.** 100,000 tokens against 5 POL puts every token at
-`0.00005` POL and implies a 50,000 POL valuation for the full 1,000,000,000
-supply. There is no way to add liquidity without choosing that, and whatever it
-is set to is what the first buyer pays.
+**The ratio would be the price.** Run that way, 100,000 tokens against 5 POL
+would put every token at `0.00005` POL and imply a 50,000 POL valuation for
+the full 1,000,000,000 supply. There is no way to add liquidity without
+choosing that, and whatever it is set to is what the first buyer pays.
 
 Three things it refuses to do:
 
@@ -994,8 +1002,11 @@ all of them:
   `0xc590175E…4c02b` and `0x337685fd…cc3e2`. Wallet #0 has a nonce of 2
   and 113 of the 114 have never sent anything: somebody else holds or held that
   key, which is why the phrase behind this set should be treated as leaked.
-- **100,000 LOVEWEB moved from wallet #1 to a seeder wallet** for a liquidity
-  pool, deliberately, one transaction.
+- **100,000 LOVEWEB left wallet #1 in one transaction** for `0x7f7C86e7…`,
+  which deployed a contract of its own (`0xc47abbb4…`) and moved all 100,000
+  into it; that contract still holds them. No LOVEWEB pool exists -- QuickSwap
+  V2, Sushi V2, QuickSwap Algebra and Uniswap V3 all return the zero address
+  for LOVEWEB against WPOL and USDC -- so none of the 100,000 is in a pair.
 - The remainder is dust (0.00000455, 0.0000000009, 0.0000000001 tokens) sitting
   at pass-through addresses, which is why the holder count rises from 115 to
   121 while the supply stays whole.
