@@ -12,7 +12,7 @@
     "test_export.py": 34,
     "test_export_holders.py": 41,
     "test_gen_wallets.py": 66,
-    "test_install_gateway.py": 83,
+    "test_install_gateway.py": 92,
     "test_merge_collect.py": 15,
     "test_merge_preflight.py": 16,
     "test_merge_route.py": 34,
